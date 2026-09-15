@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { computeSevenDayAccuracy, computeStatusCounts, computeUpcomingReviewOverview } from "./stats";
-import type { LearningItem, ReviewAttempt, ScheduleState } from "./types";
+import {
+  computeAbilityStatusCounts,
+  computeSevenDayAccuracy,
+  computeStatusCounts,
+  computeUpcomingReviewOverview,
+  summarizeSessionResultsByAbility,
+} from "./stats";
+import type { LearningItem, ReviewAttempt, ScheduleState, StudySessionExerciseResult } from "./types";
 
 const NOW = new Date("2026-09-14T09:00:00.000Z");
 
@@ -130,5 +136,103 @@ describe("computeUpcomingReviewOverview", () => {
 
   it("空資料回傳 0，不崩潰", () => {
     expect(computeUpcomingReviewOverview([], "ja", NOW)).toEqual({ dueWithinOneDay: 0, dueWithinWeek: 0 });
+  });
+});
+
+describe("computeAbilityStatusCounts", () => {
+  function makeSchedule(overrides: Partial<ScheduleState> & { learningItemId: string; ability: "recall" | "reading" }): ScheduleState {
+    return {
+      language: "ja",
+      dueAt: NOW.toISOString(),
+      intervalDays: 1,
+      streak: 1,
+      lapseCount: 0,
+      ...overrides,
+    };
+  }
+
+  it("漢字項目分別統計 recall 與 reading 兩種能力的狀態", () => {
+    const items: LearningItem[] = [
+      makeItem({ id: "kanji-1", answer: "先生", reading: "せんせい" }), // 漢字，需要 recall + reading
+    ];
+    const schedules: ScheduleState[] = [
+      makeSchedule({ learningItemId: "kanji-1", ability: "recall", streak: 5, lapseCount: 0 }), // mastered
+      makeSchedule({ learningItemId: "kanji-1", ability: "reading", streak: 0, lapseCount: 1 }), // learning
+    ];
+
+    const counts = computeAbilityStatusCounts(items, schedules, "ja");
+    expect(counts.recall).toEqual({ total: 1, new: 0, learning: 0, mastered: 1, struggling: 0 });
+    expect(counts.reading).toEqual({ total: 1, new: 0, learning: 1, mastered: 0, struggling: 0 });
+  });
+
+  it("純假名項目不需要 reading，不會計入 reading 統計", () => {
+    const items: LearningItem[] = [makeItem({ id: "kana-1", answer: "ありがとう", reading: "ありがとう" })];
+    const counts = computeAbilityStatusCounts(items, [], "ja");
+    expect(counts.recall.total).toBe(1);
+    expect(counts.reading.total).toBe(0);
+  });
+
+  it("還沒有排程紀錄的能力算 new", () => {
+    const items: LearningItem[] = [makeItem({ id: "kanji-2", answer: "学生", reading: "がくせい" })];
+    const counts = computeAbilityStatusCounts(items, [], "ja");
+    expect(counts.recall).toEqual({ total: 1, new: 1, learning: 0, mastered: 0, struggling: 0 });
+    expect(counts.reading).toEqual({ total: 1, new: 1, learning: 0, mastered: 0, struggling: 0 });
+  });
+
+  it("只統計指定語言", () => {
+    const items: LearningItem[] = [
+      makeItem({ id: "ja-1", language: "ja", answer: "先生", reading: "せんせい" }),
+      makeItem({ id: "en-1", language: "en", answer: "hello", reading: undefined }),
+    ];
+    const counts = computeAbilityStatusCounts(items, [], "en");
+    expect(counts.recall.total).toBe(1);
+    expect(counts.reading.total).toBe(0);
+  });
+
+  it("空資料回傳全 0，不崩潰", () => {
+    const counts = computeAbilityStatusCounts([], [], "ja");
+    expect(counts.recall).toEqual({ total: 0, new: 0, learning: 0, mastered: 0, struggling: 0 });
+    expect(counts.reading).toEqual({ total: 0, new: 0, learning: 0, mastered: 0, struggling: 0 });
+  });
+});
+
+describe("summarizeSessionResultsByAbility", () => {
+  function makeResult(overrides: Partial<StudySessionExerciseResult>): StudySessionExerciseResult {
+    return {
+      exerciseId: "ex-1",
+      learningItemId: "item-1",
+      exerciseType: "recall",
+      result: "correct",
+      usedHint: false,
+      responseTimeMs: 1000,
+      ...overrides,
+    };
+  }
+
+  it("分別計算漢字練習（recall）與平假名練習（reading）的正確率", () => {
+    const results: StudySessionExerciseResult[] = [
+      makeResult({ exerciseId: "r1", exerciseType: "recall", result: "correct" }),
+      makeResult({ exerciseId: "r2", exerciseType: "recall", result: "incorrect" }),
+      makeResult({ exerciseId: "d1", exerciseType: "reading", result: "correct" }),
+      makeResult({ exerciseId: "d2", exerciseType: "reading", result: "correct" }),
+    ];
+
+    const summary = summarizeSessionResultsByAbility(results);
+    expect(summary.recall).toEqual({ total: 2, correct: 1, accuracyPercent: 50 });
+    expect(summary.reading).toEqual({ total: 2, correct: 2, accuracyPercent: 100 });
+  });
+
+  it("某個能力這次 session 沒有出現時，回傳 total 0、accuracyPercent 0（不是 NaN）", () => {
+    const results: StudySessionExerciseResult[] = [
+      makeResult({ exerciseId: "r1", exerciseType: "recall", result: "correct" }),
+    ];
+    const summary = summarizeSessionResultsByAbility(results);
+    expect(summary.reading).toEqual({ total: 0, correct: 0, accuracyPercent: 0 });
+  });
+
+  it("空陣列回傳兩者皆 0，不崩潰", () => {
+    const summary = summarizeSessionResultsByAbility([]);
+    expect(summary.recall).toEqual({ total: 0, correct: 0, accuracyPercent: 0 });
+    expect(summary.reading).toEqual({ total: 0, correct: 0, accuracyPercent: 0 });
   });
 });

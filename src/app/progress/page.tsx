@@ -2,8 +2,14 @@
 
 import { useEffect, useState } from "react";
 
-import type { StudySession } from "@/domain/types";
-import { computeSevenDayAccuracy, computeStatusCounts, type AccuracyResult, type StatusCounts } from "@/domain/stats";
+import type { AbilityKind, StudySession } from "@/domain/types";
+import {
+  computeAbilityStatusCounts,
+  computeSevenDayAccuracy,
+  computeStatusCounts,
+  type AccuracyResult,
+  type StatusCounts,
+} from "@/domain/stats";
 import { buildTodayQueue } from "@/domain/queue";
 import { formatDurationMs } from "@/domain/time";
 import { getRepository } from "@/repository";
@@ -11,8 +17,14 @@ import { StatCard } from "@/components/StatCard";
 import { EmptyState } from "@/components/EmptyState";
 import { STATUS_LABELS } from "@/lib/labels";
 
+const ABILITY_SECTION_LABEL: Record<AbilityKind, string> = {
+  recall: "漢字練習",
+  reading: "平假名練習",
+};
+
 interface ProgressData {
   statusCounts: StatusCounts;
+  abilityStatusCounts: Record<AbilityKind, StatusCounts>;
   accuracy: AccuracyResult;
   dueCount: number;
   recentSessions: StudySession[];
@@ -43,6 +55,7 @@ export default function ProgressPage() {
 
     setData({
       statusCounts: computeStatusCounts(items, "ja"),
+      abilityStatusCounts: computeAbilityStatusCounts(items, scheduleStates, "ja"),
       accuracy: computeSevenDayAccuracy(attempts, "ja", now),
       dueCount: queue.reviewUnits.length,
       recentSessions,
@@ -72,6 +85,26 @@ export default function ProgressPage() {
               <StatCard label={STATUS_LABELS.mastered} value={String(data.statusCounts.mastered)} />
               <StatCard label={STATUS_LABELS.struggling} value={String(data.statusCounts.struggling)} />
             </div>
+          </section>
+
+          <section aria-labelledby="progress-ability" className="rounded-2xl border border-border bg-surface p-4">
+            <h2 id="progress-ability" className="text-sm font-medium text-foreground-muted">
+              分項能力狀態
+            </h2>
+            {(["recall", "reading"] as const).map((ability) => (
+              <div key={ability} className="mt-3 first:mt-2">
+                <p className="text-xs font-medium text-foreground">{ABILITY_SECTION_LABEL[ability]}</p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <StatCard label="已接觸" value={String(data.abilityStatusCounts[ability].total)} />
+                  <StatCard label={STATUS_LABELS.learning} value={String(data.abilityStatusCounts[ability].learning)} />
+                  <StatCard label={STATUS_LABELS.mastered} value={String(data.abilityStatusCounts[ability].mastered)} />
+                  <StatCard
+                    label={STATUS_LABELS.struggling}
+                    value={String(data.abilityStatusCounts[ability].struggling)}
+                  />
+                </div>
+              </div>
+            ))}
           </section>
 
           <section aria-labelledby="progress-accuracy" className="rounded-2xl border border-border bg-surface p-4">

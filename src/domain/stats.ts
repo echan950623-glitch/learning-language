@@ -2,7 +2,17 @@
  * 統計計算，全部從實際保存的 items／attempts 推導，不憑印象或假資料。
  */
 
-import type { Language, LearningItem, ReviewAttempt, ScheduleState } from "./types";
+import type {
+  AbilityKind,
+  AttemptResult,
+  Language,
+  LearningItem,
+  ReviewAttempt,
+  ScheduleState,
+  StudySessionExerciseResult,
+} from "./types";
+import { requiredAbilities } from "./abilities";
+import { deriveStatus } from "./srs";
 import { addDays } from "./time";
 
 export interface StatusCounts {
@@ -20,6 +30,60 @@ export function computeStatusCounts(items: LearningItem[], language: Language): 
     counts[item.status] += 1;
   }
   return counts;
+}
+
+function emptyStatusCounts(): StatusCounts {
+  return { total: 0, new: 0, learning: 0, mastered: 0, struggling: 0 };
+}
+
+/**
+ * 漢字練習（recall）／平假名練習（reading）各自的項目狀態統計，讓進度頁能分別看出
+ * 兩種能力各自的掌握狀況，而不是只看 combineAbilityStatuses 合併後的單一整體狀態。
+ * 只有 requiredAbilities(item) 真的需要那項能力的項目才會計入該能力的統計
+ * （純假名項目不需要 reading，所以不會出現在 reading 的統計裡）。
+ */
+export function computeAbilityStatusCounts(
+  items: LearningItem[],
+  scheduleStates: ScheduleState[],
+  language: Language
+): Record<AbilityKind, StatusCounts> {
+  const scheduleByKey = new Map(scheduleStates.map((s) => [`${s.learningItemId}:${s.ability}`, s]));
+  const result: Record<AbilityKind, StatusCounts> = { recall: emptyStatusCounts(), reading: emptyStatusCounts() };
+
+  for (const item of items) {
+    if (item.language !== language) continue;
+    for (const ability of requiredAbilities(item)) {
+      const schedule = scheduleByKey.get(`${item.id}:${ability}`);
+      const status = schedule ? deriveStatus(schedule.streak, schedule.lapseCount, true) : "new";
+      result[ability].total += 1;
+      result[ability][status] += 1;
+    }
+  }
+
+  return result;
+}
+
+export interface AbilityResultSummary {
+  total: number;
+  correct: number;
+  /** 0～100 的整數百分比；total 為 0 時回傳 0，呼叫端需另外處理「無資料」顯示 */
+  accuracyPercent: number;
+}
+
+function summarizeResults(results: StudySessionExerciseResult[]): AbilityResultSummary {
+  const total = results.length;
+  const correct = results.filter((r) => r.result === ("correct" satisfies AttemptResult)).length;
+  return { total, correct, accuracyPercent: total > 0 ? Math.round((correct / total) * 100) : 0 };
+}
+
+/** 結算頁用：把一次 session 的作答結果拆成漢字練習（recall）與平假名練習（reading）分別的正確率。 */
+export function summarizeSessionResultsByAbility(
+  results: StudySessionExerciseResult[]
+): Record<AbilityKind, AbilityResultSummary> {
+  return {
+    recall: summarizeResults(results.filter((r) => r.exerciseType === "recall")),
+    reading: summarizeResults(results.filter((r) => r.exerciseType === "reading")),
+  };
 }
 
 export interface AccuracyResult {

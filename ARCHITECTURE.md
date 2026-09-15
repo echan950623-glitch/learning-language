@@ -214,6 +214,129 @@ repository 實例時，`this.store` 不會重新跑 sanitize，所以需要頁�
 拒絕。合法的閏年 2 月 29 日（例如 2024、2028 年）不受影響，仍然通過。既有的 1～3 位小數
 毫秒相容性（`toISOString()` 固定 3 位，但保留對 1～2 位的相容）維持不變。
 
+## R5：規則式自動評分＋漢字／平假名雙模式（2026-09-15）
+
+沿用既有架構與 schemaVersion 2（不需要升版：新增的資料完全用既有的
+`AttemptResult`／`StudySessionExerciseResult`／`ReviewAttempt` 形狀，只是把「誰來判斷
+對不對」從使用者自評改成規則式函式，沒有新增欄位）。取代 study 頁原本「使用者自己
+輸入只是幫助回想、正確與否由使用者自評（答對／部分答對／答錯）」的設計——這個舊決策
+現在已經不成立，因為作答是規則式自動判定，不再需要（也不再提供）自評。
+
+### 自動判定：`src/domain/text.ts` + `src/domain/grading.ts`
+
+比對邏輯拆成兩層，都是純函式、不碰 React、不串 AI／外部 API：
+
+- `text.ts`：`containsKanji`（判斷答案是否含漢字，供 UI 標籤使用）、
+  `katakanaToHiragana`（片假名逐字轉平假名，非片假名字元原樣保留）、
+  `normalizeForComparison`（Unicode NFKC + 移除所有空白字元）。這個 App 的答案都是
+  單一日文詞彙，詞彙內不該有空白，所以「合理處理多餘空格」直接定義成整段清除，
+  同時涵蓋 trim 與詞中間誤觸的空白。
+- `grading.ts` 的 `gradeAttempt({ ability, rawInput, expectedAnswer })`：
+  - `recall`：雙方都跑 `normalizeForComparison` 後完整比對（不是子字串比對）。
+  - `reading`：額外把雙方都跑 `katakanaToHiragana`，讓片假名輸入可以判定為讀音正確；
+    羅馬字（例如 "sensei"）不會被轉換成假名，正規化後永遠不等於期望的假名答案，
+    自然被拒絕，不需要額外的黑名單邏輯。
+  - 空白（含只有空白）輸入正規化後是空字串，`correct` 永遠是 `false`——這是比 UI
+    disable 送出按鈕更底層的一道防線。
+  - 回傳 `{ correct, normalizedInput, expectedAnswer }`；`normalizedInput` 是比對用的
+    正規化結果（reading 已經是轉換後的平假名），給 UI 顯示「你的答案」。
+
+### 漢字／單字練習（recall）與平假名練習（reading）UI 標籤：`src/lib/labels.ts`
+
+`abilityDisplayLabel(ability, item)` 集中決定使用者看到的名稱，不出現 recall／reading
+英文內部代稱：`reading` 固定顯示「平假名練習」；`recall` 依 `item.answer` 是否含漢字
+（`containsKanji`）分別顯示「漢字練習」或「單字練習」——同一種 recall 能力，純假名項目
+沒有漢字可以練，顯示「漢字練習」會誤導使用者。哪個項目需要 reading 能力（有獨立且有
+價值的讀音、不是「answer 與 reading 相同的純假名詞」）維持既有的 `abilities.ts`
+`hasUsableReading`／`requiredAbilities` 判斷，這次沒有改動判斷邏輯本身。
+
+### 作答 UX：`src/app/study/page.tsx` 從「自評」改成「自動評分＋下一題」
+
+單題流程從「輸入（不批改）→ 顯示提示／答案 → 使用者自己按答對／部分答對／答錯」，
+改成兩個子階段（`subPhase`）：
+
+- `answering`：輸入框（Enter 或「確認答案」送出，空白時送出按鈕 disabled，
+  `<form onSubmit>` 讓手機虛擬鍵盤的「前往」動作也能正確送出）＋可選的限一次提示。
+  送出時呼叫 `gradeAttempt` 算出結果，立即呼叫 `recordGradedAttempt`
+  （`result: graded.correct ? "correct" : "incorrect"`，`usedHint` 照舊傳目前的提示
+  使用狀態，所以「提示後答對」會如實記錄 `usedHint: true`，不會因為改成自動評分而遺失）；
+  寫入失敗（R4）就停在 `answering`、顯示錯誤、不切到 `graded`，使用者可以直接重送。
+- `graded`：顯示「答對了」，或「答錯了」＋你的答案／正確答案；「下一題」（最後一題顯示
+  「查看結果」）用 `autoFocus` 讓 Enter 鍵原生觸發按鈕點擊，不用額外攔截 keydown；
+  `advancingRef` 在按下當下立刻鎖住、在下一題的重置 effect 才解鎖，防止 Enter 鍵重複
+  （例如按住不放的 key repeat）在同一題內把 `currentIndex` 推進兩次。
+
+這兩個子階段只存在於 React state，重新整理會遺失（回到 `answering`），但底層的作答紀錄
+在送出當下就已經原子寫入（見 R4），所以重新整理只是「少看一次已經批改完的回饋」，
+不會重複提交、也不會遺失作答資料——跟 R3 既有的「用 `exerciseResults.length` 當恢復
+索引」機制完全相容，這次沒有改動那個機制。
+
+### 「我其實答對了」修正：`markAttemptCorrect`（新的 repository 原子 API）
+
+自動判定不可能 100% 涵蓋所有合理變體（例如使用者用了系統沒預期的同義寫法），所以在
+`graded` 子階段、被判定 incorrect 時提供一個小的修正按鈕，只在「下一題」之前可用
+（一旦呼叫 `handleNext` 換題，這一題的修正入口就從畫面上消失）。
+
+`BaseLearningRepository.markAttemptCorrect({ sessionId, exerciseId })`（`baseRepository.ts`）：
+
+- 用 `session.exerciseResults` 的最後一筆是否等於傳入的 `exerciseId` 當「僅能在下一題前
+  使用」的硬性檢查——不看 `session.status`，因為最後一題評分的同一次寫入就會把 session
+  標成 `completed`（見 R3），但那一題的修正窗口在使用者體感上依然「還沒到下一題」，
+  必須放行。
+- 不新增第二筆 `ReviewAttempt`：直接原地把既有那筆的 `result` 改成 `"correct"`（其餘
+  欄位，包含 `usedHint`／`reviewedAt`，原樣保留），`StudySessionExerciseResult` 同步更新。
+- 排程不是在「已經套用 incorrect」的排程上再疊加修正，而是把這個 `(learningItemId,
+  ability)` 在這筆之前的作答（依 `reviewAttempts`的寫入順序，也就是時間順序，可能橫跨
+  多個 session——SRS 本來就是跨 session 累積）重新跑一遍 `computeNextSchedule`，重建出
+  「這筆發生前」的 streak／lapseCount，再用 `"correct"` 而不是原本的結果算一次。這樣
+  修正後的排程跟「這一題當初就直接答對」完全一致，不會因為曾經被誤判成 incorrect 而
+  留下任何痕跡（例如多餘的 lapseCount）。
+- `itemStatus` 用跟 `recordGradedAttempt` 一致的方式，把這個項目「必要能力」各自的狀態
+  （剛修正的這項用新算出的 `computed.status`，另一項讀既有 `ScheduleState`）合併。
+- 全部在同一次 `cloneStore → mutate → commit` 內完成，是名符其實的單一交易；寫入失敗會
+  丟 `PersistenceFailedError`，`attempt`／`schedule`／`session` 三者保證不變（跟 R4
+  的 copy-on-write 保證相同）。
+- 不需要新的 schema 欄位：`AttemptResult` 本來就包含 `"correct"`，這次只是換一個
+  呼叫入口去設定既有欄位，schemaVersion 維持 2。
+
+### 結算與進度：分別看到漢字練習與平假名練習
+
+- `src/domain/stats.ts` 新增 `summarizeSessionResultsByAbility`（把一次 session 的
+  `exerciseResults` 依 `exerciseType` 拆成 recall／reading 分別的 total／correct／
+  正確率，給 `/study` 結算頁用）與 `computeAbilityStatusCounts`（依 `requiredAbilities`
+  把 items＋scheduleStates 拆成 recall／reading 分別的 `StatusCounts`，只有真的需要
+  該能力的項目才計入，給 `/progress` 頁用；純假名項目因為不需要 reading，不會出現在
+  reading 的統計裡）。兩個都是純函式，輸入輸出固定。
+- 結算頁原本的「答對／部分／答錯」三欄簡化成「答對／答錯」二欄——自動評分只會產生
+  `correct`／`incorrect`，`partial` 不再由新流程產生（型別與 schema 仍保留 `partial`，
+  只是不再是這條路徑的輸出，歷史資料裡如果有 `partial` 不會造成 crash，只是不會被算進
+  這兩欄，等同「這題不計入答對也不計入答錯」的誠實呈現，不會誤報成某一邊）。
+- 進度頁新增「分項能力狀態」區塊，漢字練習／平假名練習各自顯示已接觸／學習中／已掌握／
+  需要加強四個數字，讓使用者看得出兩種能力各自的狀態，不是只有合併後的單一整體狀態。
+
+### 順手修正：`getOrCreateInProgressSession` 的輸入驗證
+
+舊版完全不驗證傳入的 `plannedUnits`：如果呼叫端傳空陣列，會建立出一個
+`plannedUnits: []`、`exerciseResults: []` 的 `in_progress` session；這種形狀在**這次
+分頁存活期間**可以正常運作（`this.store` 是記憶體物件，沒有重新跑過 schema 驗證），
+但 `schema.ts` 的 `isStudySession` 其實要求 `in_progress` 必須「還有下一題」
+（`exerciseResults.length < plannedUnits.length`），`plannedUnits: []` 必然不成立；
+同樣地，如果 `plannedUnits` 引用不存在或語言不一致的項目，`finalizeStore` 的跨紀錄
+清理會在下一次真正重新解析 localStorage 時把整個 session 丟棄。兩種情況都是「這次
+還能用、重新整理後突然消失」的不一致，而且是 repository 自己一手造成的（呼叫端如果
+剛好符合這個邊界情況，repository 明明可以在寫入當下就擋下來，卻放任寫出一包自己的
+schema 會丟棄的資料）。
+
+修法：`getOrCreateInProgressSession` 在「真的要建立新 session」的分支（已經有
+`in_progress` session 可以恢復時不受影響，因為這時傳入的 `plannedUnits` 根本不會被
+使用）新增兩項驗證，不符合就丟一般 `Error`（呼叫端邏輯錯誤，比照 `recordGradedAttempt`
+既有的驗證風格）：`plannedUnits` 不能是空陣列；每個 unit 的 `learningItemId` 必須對應
+到存在、且語言與這次 session 一致的 `LearningItem`。正常的 `/study` 初始化流程
+（`sessionInit.ts` 的 `buildFreshSession`）本來就會在 `queueResult.units.length === 0`
+時提早回傳 `empty`、且佇列裡的每個 unit 都是直接從剛查到的 items 建構出來，不可能觸發
+這兩種情況，所以這次修正對既有頁面行為沒有影響，純粹是把「repository 自己的資料完整性
+承諾」補齊，防禦未來新的呼叫端不小心違反。
+
 ## SRS／出題規則寫在哪裡
 
 - 到期日規則：`src/domain/srs.ts`（`computeNextSchedule`、`deriveStatus`、
@@ -224,6 +347,8 @@ repository 實例時，`this.store` 不會重新跑 sanitize，所以需要頁�
   `src/domain/queue.ts`。
 - 出題規則（中文→日文 recall／漢字→假名 reading，依每個能力各自的排程歷史決定，
   不依賴佇列位置，也不是 AI 出題）：`src/domain/exercises.ts`。
+- 作答自動判定規則式：`src/domain/grading.ts`（`gradeAttempt`）＋
+  `src/domain/text.ts`（NFKC 正規化、片假名轉平假名、漢字偵測），見上方「R5」。
 
 全部是純函式、不依賴模型或亂數，同樣輸入永遠得到同樣輸出。
 
@@ -231,8 +356,6 @@ repository 實例時，`this.store` 不會重新跑 sanitize，所以需要頁�
 
 - 每題只對應一個 LearningItem；`Exercise.learningItemIds` 保留陣列是為了未來句子題
   可以關聯多個項目，本階段不使用這個能力。
-- 使用者輸入的「自己作答」文字（study 頁的輸入框）不會被自動比對批改，只是幫助主動
-  回想；正確與否由使用者自評（答對／部分答對／答錯）。這是刻意的設計，不是 bug。
 - PWA icon 是暫時的純色 SVG 佔位圖示，不是最終品牌視覺；service worker
   （`public/sw.js`）只做最基本的 app shell 快取，沒有背景同步或推播。
 - 英文（`language: "en"`）與文法／片語／搭配（`type`）欄位已經存在於型別與 repository，

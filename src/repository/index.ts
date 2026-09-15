@@ -8,6 +8,7 @@ export type {
   StudySessionFilter,
   RecordGradedAttemptInput,
   RecordGradedAttemptResult,
+  MarkAttemptCorrectInput,
   RepositoryDurability,
 } from "./types";
 export { MemoryLearningRepository } from "./memoryRepository";

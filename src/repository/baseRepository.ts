@@ -8,13 +8,14 @@ import type {
   StudySession,
   StudySessionPlannedUnit,
 } from "../domain/types";
-import { combineAbilityStatuses, computeNextSchedule, deriveStatus } from "../domain/srs";
+import { combineAbilityStatuses, computeNextSchedule, deriveStatus, type SchedulePosition } from "../domain/srs";
 import { requiredAbilities } from "../domain/abilities";
 import { generateId } from "../domain/id";
 import { nowIso } from "../domain/time";
 import type {
   LanguageFilter,
   LearningRepository,
+  MarkAttemptCorrectInput,
   RecordGradedAttemptInput,
   RecordGradedAttemptResult,
   RepositoryDurability,
@@ -201,6 +202,23 @@ export abstract class BaseLearningRepository implements LearningRepository {
       return this.cloneSession(existing);
     }
 
+    // 精準修復（第四輪）：真的要建立新 session 時，plannedUnits 必須是非空、且全部引用
+    // 存在且語言一致的 LearningItem——否則寫出來的 in_progress session 會是
+    // schema.ts 的 isStudySession／finalizeStore 之後重新解析 localStorage 時會丟棄的形狀
+    // （in_progress 沒有下一題、或引用不到項目），造成「這次分頁還能用、重新整理後突然消失」
+    // 的不一致。呼叫端邏輯錯誤，比照 recordGradedAttempt 的驗證風格丟一般 Error。
+    if (plannedUnits.length === 0) {
+      throw new Error("getOrCreateInProgressSession: plannedUnits 不能是空陣列，無法建立 session");
+    }
+    for (const unit of plannedUnits) {
+      const referencedItem = this.store.items.find((i) => i.id === unit.learningItemId);
+      if (!referencedItem || referencedItem.language !== language) {
+        throw new Error(
+          `getOrCreateInProgressSession: plannedUnits 內的 learningItemId "${unit.learningItemId}" 不存在，或語言與 session 的 "${language}" 不一致`
+        );
+      }
+    }
+
     const dedupe = (ids: string[]): string[] => Array.from(new Set(ids));
     const session: StudySession = {
       id: generateId("session"),
@@ -354,6 +372,96 @@ export abstract class BaseLearningRepository implements LearningRepository {
       schedule: { ...nextSchedule },
       itemStatus,
       attempt: { ...attempt },
+      session: this.cloneSession(session),
+    };
+  }
+
+  // ---- 「我其實答對了」修正（原地改判，不新增第二筆 attempt） ----------------------
+
+  markAttemptCorrect(input: MarkAttemptCorrectInput): RecordGradedAttemptResult {
+    const next = this.cloneStore();
+
+    const session = next.studySessions.find((s) => s.id === input.sessionId);
+    if (!session) {
+      throw new Error(`markAttemptCorrect: sessionId "${input.sessionId}" 不存在`);
+    }
+
+    // 只能修正「目前最後一筆作答」，也就是還沒有進到下一題——不看 session.status，
+    // 因為最後一題評分的同一次寫入就會把 session 標成 completed，但那一題的修正窗口
+    // （下一題之前）依然合法有效。
+    const lastResult = session.exerciseResults[session.exerciseResults.length - 1];
+    if (!lastResult || lastResult.exerciseId !== input.exerciseId) {
+      throw new Error(
+        `markAttemptCorrect: exerciseId "${input.exerciseId}" 不是 session "${input.sessionId}" 目前最後一題，已經無法修正`
+      );
+    }
+
+    const attemptIndex = next.reviewAttempts.findIndex(
+      (a) => a.sessionId === input.sessionId && a.exerciseId === input.exerciseId
+    );
+    if (attemptIndex < 0) {
+      throw new Error(`markAttemptCorrect: 找不到 exerciseId "${input.exerciseId}" 對應的作答紀錄`);
+    }
+    const attempt = next.reviewAttempts[attemptIndex];
+
+    const item = next.items.find((i) => i.id === attempt.learningItemId);
+    if (!item) {
+      throw new Error(`markAttemptCorrect: learningItemId "${attempt.learningItemId}" 不存在`);
+    }
+
+    const ability: AbilityKind = attempt.exerciseType === "reading" ? "reading" : "recall";
+
+    // 重新推導排程：把這個 (item, ability) 在這筆之前的作答序列（按寫入順序，也就是
+    // 時間順序）重新跑一遍 computeNextSchedule 得到「這筆發生前」的 streak／lapseCount，
+    // 再用「correct」而不是原本的結果算一次——這樣結果會跟「當初就直接答對」完全一致，
+    // 不是在錯誤已經套用的排程上再疊加一次修正。
+    const priorAttempts = next.reviewAttempts.filter(
+      (a, idx) => idx < attemptIndex && a.learningItemId === attempt.learningItemId && a.exerciseType === attempt.exerciseType
+    );
+    let position: SchedulePosition | null = null;
+    for (const prior of priorAttempts) {
+      position = computeNextSchedule(position, prior.result, new Date(prior.reviewedAt));
+    }
+    const computed = computeNextSchedule(position, "correct", new Date(attempt.reviewedAt));
+
+    const nextSchedule: ScheduleState = {
+      learningItemId: attempt.learningItemId,
+      ability,
+      language: item.language,
+      dueAt: computed.dueAt,
+      intervalDays: computed.intervalDays,
+      streak: computed.streak,
+      lapseCount: computed.lapseCount,
+      lastReviewedAt: attempt.reviewedAt,
+    };
+    const scheduleIndex = next.scheduleStates.findIndex(
+      (s) => s.learningItemId === attempt.learningItemId && s.ability === ability
+    );
+    if (scheduleIndex >= 0) {
+      next.scheduleStates[scheduleIndex] = nextSchedule;
+    } else {
+      next.scheduleStates.push(nextSchedule);
+    }
+
+    const abilityStatuses = requiredAbilities(item).map((a) => {
+      if (a === ability) return computed.status;
+      const other = next.scheduleStates.find((s) => s.learningItemId === item.id && s.ability === a);
+      return other ? deriveStatus(other.streak, other.lapseCount, true) : deriveStatus(0, 0, false);
+    });
+    const itemStatus = combineAbilityStatuses(abilityStatuses);
+    item.status = itemStatus;
+
+    const updatedAttempt: ReviewAttempt = { ...attempt, result: "correct" };
+    next.reviewAttempts[attemptIndex] = updatedAttempt;
+
+    session.exerciseResults[session.exerciseResults.length - 1] = { ...lastResult, result: "correct" };
+
+    this.commit(next);
+
+    return {
+      schedule: { ...nextSchedule },
+      itemStatus,
+      attempt: { ...updatedAttempt },
       session: this.cloneSession(session),
     };
   }

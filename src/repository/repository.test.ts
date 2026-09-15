@@ -5,6 +5,7 @@ import { MemoryLearningRepository } from "./memoryRepository";
 import { PersistenceFailedError } from "./errors";
 import { STORAGE_KEY, sanitizeStore } from "./schema";
 import { __resetRepositorySingletonForTests, getRepository } from "./index";
+import { computeNextSchedule } from "../domain/srs";
 import type { NewLearningItemInput, StudySessionPlannedUnit } from "../domain/types";
 
 const NOW = new Date("2026-09-15T09:00:00.000Z");
@@ -328,30 +329,6 @@ describe("recordGradedAttempt — 精準修復 1：必須綁定 session 下一�
     expect(snapshot(repo, session.id)).toEqual(before);
   });
 
-  it("session 已經沒有下一題時評分會被拒絕，store 完全不變", () => {
-    const repo = new MemoryLearningRepository();
-    const item = repo.addItem(jaInput());
-    // 故意建立一個沒有任何 planned unit 的 session，模擬「已經沒有下一題」。
-    const session = repo.getOrCreateInProgressSession("ja", [], NOW);
-    const before = snapshot(repo, session.id);
-
-    expect(() =>
-      repo.recordGradedAttempt({
-        sessionId: session.id,
-        learningItemId: item.id,
-        ability: "recall",
-        exerciseId: "ex-no-next",
-        exerciseType: "recall",
-        result: "correct",
-        usedHint: false,
-        responseTimeMs: 500,
-        now: NOW,
-      })
-    ).toThrow(/沒有下一題/);
-
-    expect(snapshot(repo, session.id)).toEqual(before);
-  });
-
   it("正確的下一個 planned unit 仍然可以正常評分（確認驗證沒有誤擋合法流程）", () => {
     const { repo, itemA, itemB, session } = twoItemSession();
 
@@ -660,6 +637,342 @@ describe("R3：StudySession 中途重整恢復", () => {
     );
     expect(second.id).not.toBe(first.id);
     expect(second.status).toBe("in_progress");
+  });
+});
+
+describe("getOrCreateInProgressSession — 輸入驗證（避免寫出 schema 會丟棄的資料）", () => {
+  it("拒絕空 plannedUnits，不會建立出「in_progress 卻沒有下一題」的不一致 session", () => {
+    const repo = new MemoryLearningRepository();
+    repo.addItem(jaInput());
+
+    expect(() => repo.getOrCreateInProgressSession("ja", [], NOW)).toThrow(/plannedUnits/);
+    expect(repo.getInProgressSession("ja")).toBeUndefined();
+    expect(repo.listStudySessions({ language: "ja", status: "all" })).toHaveLength(0);
+  });
+
+  it("拒絕引用不存在的 learningItemId，不會建立 session", () => {
+    const repo = new MemoryLearningRepository();
+    expect(() =>
+      repo.getOrCreateInProgressSession("ja", [{ learningItemId: "missing-item", ability: "recall", kind: "new" }], NOW)
+    ).toThrow(/不存在/);
+    expect(repo.listStudySessions({ language: "ja", status: "all" })).toHaveLength(0);
+  });
+
+  it("拒絕引用語言與 session 不一致的 item，不會建立 session", () => {
+    const repo = new MemoryLearningRepository();
+    const enItem = repo.addItem(enInput());
+    expect(() =>
+      repo.getOrCreateInProgressSession("ja", [{ learningItemId: enItem.id, ability: "recall", kind: "new" }], NOW)
+    ).toThrow(/語言/);
+    expect(repo.listStudySessions({ language: "ja", status: "all" })).toHaveLength(0);
+    expect(repo.listStudySessions({ language: "en", status: "all" })).toHaveLength(0);
+  });
+
+  it("合法的 plannedUnits 仍正常建立（確認驗證沒有誤擋合法流程）", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(jaInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    expect(session.status).toBe("in_progress");
+    expect(session.plannedUnits).toHaveLength(1);
+  });
+});
+
+describe("markAttemptCorrect — 「我其實答對了」修正", () => {
+  it("修正單一 recall 作答後，只有一筆 attempt，排程等同這題一開始就直接答對", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(kanjiInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-1",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    const outcome = repo.markAttemptCorrect({ sessionId: session.id, exerciseId: "ex-1" });
+
+    expect(repo.listReviewAttempts({ language: "ja" })).toHaveLength(1);
+    expect(outcome.attempt.result).toBe("correct");
+    expect(outcome.schedule.streak).toBe(1);
+    expect(outcome.schedule.lapseCount).toBe(0);
+    expect(outcome.schedule.intervalDays).toBe(1);
+    expect(outcome.session.exerciseResults[0].result).toBe("correct");
+
+    // 跟「這題一開始就直接答對」的排程完全一致
+    const reference = computeNextSchedule(null, "correct", NOW);
+    expect(outcome.schedule.streak).toBe(reference.streak);
+    expect(outcome.schedule.lapseCount).toBe(reference.lapseCount);
+    expect(outcome.schedule.dueAt).toBe(reference.dueAt);
+  });
+
+  it("修正較晚一次的作答時，會重放同一個 (item, ability) 之前的作答序列，而不是疊加在錯誤排程上", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(jaInput());
+
+    // 第一次 session：直接答對，streak 變成 1。
+    const sessionA = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: sessionA.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-a",
+      exerciseType: "recall",
+      result: "correct",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    // 第二次 session（到期複習）：誤判成 incorrect，之後修正。
+    const sessionB = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "review" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: sessionB.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-b",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    const outcome = repo.markAttemptCorrect({ sessionId: sessionB.id, exerciseId: "ex-b" });
+
+    // 等同「兩次都直接答對」：streak 1 → 2，interval 對應 REVIEW_INTERVALS_DAYS[1] = 3 天。
+    const afterFirst = computeNextSchedule(null, "correct", NOW);
+    const reference = computeNextSchedule(afterFirst, "correct", NOW);
+    expect(outcome.schedule.streak).toBe(reference.streak);
+    expect(outcome.schedule.intervalDays).toBe(reference.intervalDays);
+    expect(repo.listReviewAttempts({ language: "ja" })).toHaveLength(2);
+  });
+
+  it("只能修正 session 目前最後一題；已經不是最後一題會被拒絕，且 store 完全不變", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(kanjiInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [
+        { learningItemId: item.id, ability: "recall", kind: "new" },
+        { learningItemId: item.id, ability: "reading", kind: "new" },
+      ],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-first",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+    repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "reading",
+      exerciseId: "ex-second",
+      exerciseType: "reading",
+      result: "correct",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    const before = {
+      attempts: repo.listReviewAttempts({ language: "ja" }),
+      schedules: repo.listScheduleStates({ language: "ja" }),
+    };
+
+    expect(() => repo.markAttemptCorrect({ sessionId: session.id, exerciseId: "ex-first" })).toThrow();
+
+    expect(repo.listReviewAttempts({ language: "ja" })).toEqual(before.attempts);
+    expect(repo.listScheduleStates({ language: "ja" })).toEqual(before.schedules);
+  });
+
+  it("不存在的 exerciseId 或 sessionId 會被拒絕", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(jaInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-1",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    expect(() => repo.markAttemptCorrect({ sessionId: session.id, exerciseId: "ex-missing" })).toThrow();
+    expect(() => repo.markAttemptCorrect({ sessionId: "session-missing", exerciseId: "ex-1" })).toThrow();
+  });
+
+  it("已經是 completed 的 session（最後一題評分當下就自動完成）仍可以修正最後一題", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(jaInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    const graded = repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-1",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+    expect(graded.session.status).toBe("completed"); // 唯一一題，評分當下就完成
+
+    const outcome = repo.markAttemptCorrect({ sessionId: session.id, exerciseId: "ex-1" });
+    expect(outcome.attempt.result).toBe("correct");
+    expect(outcome.session.status).toBe("completed");
+    expect(outcome.session.completedAt).toBe(graded.session.completedAt);
+  });
+
+  it("提示後修正為答對，usedHint 仍保留 true", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(jaInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-1",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: true,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    const outcome = repo.markAttemptCorrect({ sessionId: session.id, exerciseId: "ex-1" });
+    expect(outcome.attempt.usedHint).toBe(true);
+    expect(outcome.attempt.result).toBe("correct");
+  });
+
+  it("漢字項目修正 recall 後，itemStatus 正確合併另一項能力（reading）既有的狀態", () => {
+    const repo = new MemoryLearningRepository();
+    const item = repo.addItem(kanjiInput());
+
+    // reading 先透過 5 次獨立 session（模擬跨天複習）練到 mastered（streak 5）。
+    let streak = 0;
+    for (let i = 0; i < 5; i += 1) {
+      const readingSession = repo.getOrCreateInProgressSession(
+        "ja",
+        [{ learningItemId: item.id, ability: "reading", kind: i === 0 ? "new" : "review" }],
+        NOW
+      );
+      const result = repo.recordGradedAttempt({
+        sessionId: readingSession.id,
+        learningItemId: item.id,
+        ability: "reading",
+        exerciseId: `ex-reading-${i}`,
+        exerciseType: "reading",
+        result: "correct",
+        usedHint: false,
+        responseTimeMs: 500,
+        now: NOW,
+      });
+      streak = result.schedule.streak;
+    }
+    expect(streak).toBe(5);
+
+    // recall 這次是第一次練，答錯。
+    const recallSession = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: recallSession.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-recall",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+    expect(repo.getItem(item.id)?.status).not.toBe("mastered"); // recall 還沒達標，整體不該是 mastered
+
+    const outcome = repo.markAttemptCorrect({ sessionId: recallSession.id, exerciseId: "ex-recall" });
+    // recall streak 1（< mastery 門檻 5），reading 已經 mastered → 合併結果是 learning，不是 mastered。
+    expect(outcome.itemStatus).toBe("learning");
+    expect(repo.getItem(item.id)?.status).toBe("learning");
+  });
+
+  it("持久化失敗時修正不會留下半套資料，attempt／schedule／session 都維持原狀", () => {
+    const storage = installMockLocalStorage();
+    const repo = new LocalStorageLearningRepository();
+    const item = repo.addItem(jaInput());
+    const session = repo.getOrCreateInProgressSession(
+      "ja",
+      [{ learningItemId: item.id, ability: "recall", kind: "new" }],
+      NOW
+    );
+    repo.recordGradedAttempt({
+      sessionId: session.id,
+      learningItemId: item.id,
+      ability: "recall",
+      exerciseId: "ex-1",
+      exerciseType: "recall",
+      result: "incorrect",
+      usedHint: false,
+      responseTimeMs: 500,
+      now: NOW,
+    });
+
+    (storage as MemoryStorage).failNextSetItem(1);
+    expect(() => repo.markAttemptCorrect({ sessionId: session.id, exerciseId: "ex-1" })).toThrow(
+      PersistenceFailedError
+    );
+
+    expect(repo.listReviewAttempts({ language: "ja" })[0].result).toBe("incorrect");
+    expect(repo.getScheduleState(item.id, "recall")?.streak).toBe(0);
+
+    // 底層 storage 也要是舊狀態
+    const repo2 = new LocalStorageLearningRepository();
+    expect(repo2.listReviewAttempts({ language: "ja" })[0].result).toBe("incorrect");
   });
 });
 

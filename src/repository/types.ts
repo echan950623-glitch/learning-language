@@ -57,6 +57,12 @@ export interface RecordGradedAttemptResult {
   session: StudySession;
 }
 
+export interface MarkAttemptCorrectInput {
+  sessionId: string;
+  /** 這一題的 exerciseId，必須是這個 session 目前最後一筆作答紀錄（僅能在下一題前修正）。 */
+  exerciseId: string;
+}
+
 /** localStorage 持久（重新整理不會遺失） vs. 純記憶體（這次分頁關掉／整理就遺失）。 */
 export type RepositoryDurability = "persistent" | "volatile";
 
@@ -90,6 +96,16 @@ export interface LearningRepository {
    * 同一次寫入也會把 session 標成 completed。
    */
   recordGradedAttempt(input: RecordGradedAttemptInput): RecordGradedAttemptResult;
+  /**
+   * 「我其實答對了」修正：把剛剛評分為 incorrect 的最後一題改判為 correct。
+   * 只能修正這個 session 目前最後一筆作答（`session.exerciseResults` 的最後一筆，
+   * 也就是「下一題」開始之前），不會新增第二筆 attempt——直接原地更新既有的
+   * ReviewAttempt／StudySessionExerciseResult，並且用「重新套用這個 (item, ability)
+   * 在這筆之前的作答序列＋這次改成 correct」重新推導排程，讓結果跟「當初就直接答對」
+   * 完全一致，而不是在錯誤已經套用的排程上再疊加一次修正。
+   * itemStatus／schedule／session 三者在同一次原子寫入內一起更新。
+   */
+  markAttemptCorrect(input: MarkAttemptCorrectInput): RecordGradedAttemptResult;
   /** 放棄目前這個 in_progress session：標記 abandoned，不刪除已經產生的 attempt／排程。 */
   abandonSession(sessionId: string): void;
 }
