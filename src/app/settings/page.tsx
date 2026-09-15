@@ -33,7 +33,7 @@ export default function SettingsPage() {
     <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-5 py-6">
       <header>
         <h1 className="text-xl font-semibold text-foreground">學習設定</h1>
-        <p className="mt-1 text-sm text-foreground-muted">調整下一次「今日學習」要完成的總題數。</p>
+        <p className="mt-1 text-sm text-foreground-muted">調整下一次「今日學習」或自主複習要完成的總題數。</p>
       </header>
 
       <section aria-labelledby="question-count" className="rounded-2xl border border-border bg-surface p-4">
@@ -41,7 +41,7 @@ export default function SettingsPage() {
           每次學習題數
         </h2>
         <p className="mt-1 text-xs leading-5 text-foreground-muted">
-          到期複習會優先排入，剩餘名額再加入新單字。進行中的學習不會被中途改變。
+          今日學習會先排到期複習，再加入新單字；錯題與總複習也共用這個題數。進行中的學習不會被中途改變。
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-3" role="radiogroup" aria-labelledby="question-count">

@@ -28,7 +28,7 @@ type Phase = "loading" | "empty" | "active" | "summary" | "error";
 type SubPhase = "answering" | "graded";
 
 const KIND_LABEL: Record<QueueEntryKind, string> = {
-  review: "到期複習",
+  review: "複習",
   new: "新內容",
 };
 

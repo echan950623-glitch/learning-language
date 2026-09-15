@@ -9,6 +9,7 @@ import { getRepository } from "@/repository";
 import { StatCard } from "@/components/StatCard";
 import { STATUS_LABELS } from "@/lib/labels";
 import { readStudyQuestionCount } from "@/lib/studyPreferences";
+import { buildFullReviewUnits, buildWrongAnswerUnits } from "@/domain/practice";
 
 interface HomeData {
   dueCount: number;
@@ -17,6 +18,8 @@ interface HomeData {
   statusCounts: StatusCounts;
   accuracy: AccuracyResult;
   hasInProgressSession: boolean;
+  wrongCount: number;
+  encounteredCount: number;
 }
 
 export default function HomePage() {
@@ -34,6 +37,7 @@ export default function HomePage() {
     const queue = limitTodayQueue(buildTodayQueue(items, scheduleStates, now, questionCount), questionCount);
     const statusCounts = computeStatusCounts(items, "ja");
     const accuracy = computeSevenDayAccuracy(attempts, "ja", now);
+    const fullReviewUnits = buildFullReviewUnits(items, attempts);
 
     setData({
       dueCount: queue.reviewUnits.length,
@@ -42,6 +46,8 @@ export default function HomePage() {
       statusCounts,
       accuracy,
       hasInProgressSession: Boolean(inProgressSession),
+      wrongCount: buildWrongAnswerUnits(items, attempts).length,
+      encounteredCount: new Set(fullReviewUnits.map((unit) => unit.learningItemId)).size,
     });
   }, []);
 
@@ -109,6 +115,36 @@ export default function HomePage() {
                 className="rounded-xl border border-border px-4 py-3 text-center text-sm font-medium text-foreground transition-colors hover:bg-surface-muted"
               >
                 快速新增內容
+              </Link>
+            </div>
+          </section>
+
+          <section aria-labelledby="self-review" className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 id="self-review" className="text-sm font-medium text-foreground">自主複習</h2>
+                <p className="mt-1 text-xs text-foreground-muted">不用等到期，選一種方式直接練習。</p>
+              </div>
+              <Link href="/review" className="shrink-0 text-xs font-medium text-primary underline">
+                查看全部
+              </Link>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <Link
+                href="/review#wrong"
+                className="min-h-20 rounded-xl bg-danger-bg p-3 transition-opacity hover:opacity-80"
+              >
+                <span className="block text-sm font-semibold text-danger">錯題專區</span>
+                <span className="mt-1 block text-xl font-semibold tabular-nums text-foreground">{data.wrongCount}</span>
+                <span className="text-xs text-foreground-muted">待加強題目</span>
+              </Link>
+              <Link
+                href="/review#full"
+                className="min-h-20 rounded-xl bg-surface-muted p-3 transition-opacity hover:opacity-80"
+              >
+                <span className="block text-sm font-semibold text-primary">總複習</span>
+                <span className="mt-1 block text-xl font-semibold tabular-nums text-foreground">{data.encounteredCount}</span>
+                <span className="text-xs text-foreground-muted">已練過單字</span>
               </Link>
             </div>
           </section>
