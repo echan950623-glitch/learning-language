@@ -215,7 +215,7 @@ export default function StudyPage() {
 
   if (phase === "loading") {
     return (
-      <main className="mx-auto flex max-w-md flex-1 flex-col gap-4 px-4 py-6" aria-live="polite">
+      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6" aria-live="polite">
         <div className="h-6 w-32 animate-pulse rounded bg-surface-muted" />
         <div className="h-48 animate-pulse rounded-xl bg-surface-muted" />
       </main>
@@ -224,7 +224,7 @@ export default function StudyPage() {
 
   if (phase === "error") {
     return (
-      <main className="mx-auto flex max-w-md flex-1 flex-col gap-4 px-4 py-6">
+      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
         <h1 className="text-xl font-semibold text-foreground">今日學習</h1>
         <div role="alert" className="rounded-xl bg-danger-bg px-4 py-3 text-sm text-danger">
           無法開始今日學習：{initError}
@@ -242,7 +242,7 @@ export default function StudyPage() {
 
   if (phase === "empty") {
     return (
-      <main className="mx-auto flex max-w-md flex-1 flex-col gap-4 px-4 py-6">
+      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
         <h1 className="text-xl font-semibold text-foreground">今日學習</h1>
         <EmptyState
           title="今天沒有待複習或新內容"
@@ -276,7 +276,7 @@ export default function StudyPage() {
       .filter((item): item is LearningItem => Boolean(item));
 
     return (
-      <main className="mx-auto flex max-w-md flex-1 flex-col gap-4 px-4 py-6">
+      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
         <h1 className="text-xl font-semibold text-foreground">今日結算</h1>
 
         <section className="rounded-2xl border border-border bg-surface p-4">
@@ -367,7 +367,7 @@ export default function StudyPage() {
 
   if (!unit || !item || !currentExercise) {
     return (
-      <main className="mx-auto flex max-w-md flex-1 flex-col gap-4 px-4 py-6" aria-live="polite">
+      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6" aria-live="polite">
         <div className="h-6 w-32 animate-pulse rounded bg-surface-muted" />
         <div className="h-48 animate-pulse rounded-xl bg-surface-muted" />
       </main>
@@ -379,7 +379,7 @@ export default function StudyPage() {
   const isLastQuestion = currentIndex + 1 >= total;
 
   return (
-    <main className="mx-auto flex max-w-md flex-1 flex-col gap-4 px-4 py-6">
+    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
       <header>
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-semibold text-foreground">今日學習</h1>

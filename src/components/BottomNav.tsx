@@ -21,7 +21,7 @@ export function BottomNav() {
       aria-label="主要導覽"
       className="sticky bottom-0 z-10 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
     >
-      <ul className="mx-auto flex max-w-md items-stretch justify-between px-2">
+      <ul className="mx-auto flex w-[94%] max-w-xl items-stretch justify-between">
         {NAV_ITEMS.map((item) => {
           const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (

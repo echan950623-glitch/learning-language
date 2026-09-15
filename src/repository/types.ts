@@ -72,6 +72,8 @@ export interface LearningRepository {
   listItems(filter?: LanguageFilter): LearningItem[];
   getItem(id: string): LearningItem | undefined;
   addItem(input: NewLearningItemInput): LearningItem;
+  /** 以內容去重後原子加入整批項目；全部已存在時不寫入並回傳空陣列。 */
+  addItemsIfMissing(inputs: NewLearningItemInput[]): LearningItem[];
   removeItem(id: string): void;
   /** 依語言移除所有種子範例資料，回傳實際移除的項目數 */
   removeSeedItems(language?: Language): number;

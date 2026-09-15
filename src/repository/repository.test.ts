@@ -79,6 +79,23 @@ describe("MemoryLearningRepository — 基本 CRUD 與日英隔離", () => {
     expect(repo.listItems({ language: "en" })).toHaveLength(1); // 英文種子不受影響
   });
 
+  it("addItemsIfMissing 以內容去重並一次加入整批單字", () => {
+    const repo = new MemoryLearningRepository();
+    repo.addItem(kanjiInput({ promptZh: "老師", answer: "先生", reading: "せんせい" }));
+
+    const added = repo.addItemsIfMissing([
+      kanjiInput({ promptZh: "老師", answer: "先生", reading: "せんせい", isSeed: true }),
+      kanjiInput({ promptZh: "貓", answer: "猫", reading: "ねこ", isSeed: true }),
+    ]);
+
+    expect(added).toHaveLength(1);
+    expect(added[0].answer).toBe("猫");
+    expect(repo.listItems({ language: "ja" })).toHaveLength(2);
+    expect(repo.addItemsIfMissing([
+      kanjiInput({ promptZh: "貓", answer: "猫", reading: "ねこ", isSeed: true }),
+    ])).toEqual([]);
+  });
+
   it("空資料查詢不會崩潰，回傳空陣列", () => {
     const repo = new MemoryLearningRepository();
     expect(repo.listItems()).toEqual([]);
@@ -1188,6 +1205,20 @@ describe("R4：持久化失敗不得顯示成功或留下半套資料", () => {
     // 用另一個實例重新讀取底層 storage，確認真的沒有寫進去（不是只有這個實例記憶體沒更新）。
     const repo2 = new LocalStorageLearningRepository();
     expect(repo2.listItems().some((i) => i.promptZh === "測試失敗")).toBe(false);
+  });
+
+  it("整批新增寫入失敗時維持原子性，不留下部分單字", () => {
+    const repo = new LocalStorageLearningRepository();
+    const before = repo.listItems().length;
+    storage.failNextSetItem(1);
+
+    expect(() => repo.addItemsIfMissing([
+      kanjiInput({ promptZh: "春天", answer: "春", reading: "はる", isSeed: true }),
+      kanjiInput({ promptZh: "夏天", answer: "夏", reading: "なつ", isSeed: true }),
+    ])).toThrow(PersistenceFailedError);
+
+    expect(repo.listItems()).toHaveLength(before);
+    expect(new LocalStorageLearningRepository().listItems()).toHaveLength(before);
   });
 
   it("評分寫入失敗不會產生半套 schedule／attempt／session 更新", () => {

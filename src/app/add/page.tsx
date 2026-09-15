@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { describePersistenceError, getRepository } from "@/repository";
 import type { ItemSource } from "@/domain/types";
 import { SOURCE_LABELS, USER_SELECTABLE_SOURCES } from "@/lib/labels";
+import { buildCommonVocabularyInputs } from "@/repository/seed";
 
 interface FormState {
   promptZh: string;
@@ -41,6 +42,9 @@ export default function AddItemPage() {
   const [seedCount, setSeedCount] = useState<number | null>(null);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
+  const [packMessage, setPackMessage] = useState<string | null>(null);
+  const [packError, setPackError] = useState<string | null>(null);
+  const [isImportingPack, setIsImportingPack] = useState(false);
   const promptRef = useRef<HTMLInputElement>(null);
 
   const refreshSeedCount = () => {
@@ -114,8 +118,28 @@ export default function AddItemPage() {
     }
   }
 
+  function handleImportPack() {
+    const repository = getRepository();
+    setIsImportingPack(true);
+    setPackMessage(null);
+    setPackError(null);
+    try {
+      const added = repository.addItemsIfMissing(buildCommonVocabularyInputs());
+      setPackMessage(
+        added.length > 0
+          ? `已加入 ${added.length} 個常用單字；原本已存在的內容不會重複。`
+          : "這 30 個常用單字都已經在你的清單中。"
+      );
+      refreshSeedCount();
+    } catch (error) {
+      setPackError(describePersistenceError(error));
+    } finally {
+      setIsImportingPack(false);
+    }
+  }
+
   return (
-    <main className="mx-auto flex max-w-md flex-1 flex-col gap-5 px-4 py-6">
+    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-5 py-6">
       <header>
         <Link href="/" className="text-xs text-foreground-muted hover:text-foreground">
           ← 回首頁
@@ -261,6 +285,33 @@ export default function AddItemPage() {
           {isSubmitting ? "新增中…" : "新增這個字"}
         </button>
       </form>
+
+      <section aria-labelledby="vocabulary-pack" className="rounded-xl border border-border bg-surface p-4">
+        <h2 id="vocabulary-pack" className="text-sm font-medium text-foreground">
+          初級常用單字包
+        </h2>
+        <p className="mt-1 text-xs leading-5 text-foreground-muted">
+          一次加入 30 個常用單字，包含時間、地點、人物、動詞與形容詞，每個字都能練漢字和假名讀音。
+        </p>
+        <button
+          type="button"
+          onClick={handleImportPack}
+          disabled={isImportingPack}
+          className="mt-3 min-h-11 w-full rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90 disabled:opacity-50"
+        >
+          {isImportingPack ? "加入中…" : "加入 30 個常用單字"}
+        </button>
+        {packMessage ? (
+          <p role="status" className="mt-2 text-xs text-success">
+            {packMessage}
+          </p>
+        ) : null}
+        {packError ? (
+          <p role="alert" className="mt-2 text-xs text-danger">
+            加入失敗：{packError}
+          </p>
+        ) : null}
+      </section>
 
       <section aria-labelledby="seed-management" className="rounded-xl border border-dashed border-border bg-surface-muted p-4">
         <h2 id="seed-management" className="text-sm font-medium text-foreground">

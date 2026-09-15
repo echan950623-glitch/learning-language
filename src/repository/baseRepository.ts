@@ -93,9 +93,9 @@ export abstract class BaseLearningRepository implements LearningRepository {
     return item ? { ...item, tags: [...item.tags] } : undefined;
   }
 
-  addItem(input: NewLearningItemInput): LearningItem {
+  private buildLearningItem(input: NewLearningItemInput, createdAt = nowIso()): LearningItem {
     const trimmedTags = input.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0);
-    const item: LearningItem = {
+    return {
       id: generateId("item"),
       language: input.language,
       type: input.type,
@@ -106,14 +106,40 @@ export abstract class BaseLearningRepository implements LearningRepository {
       source: input.source,
       tags: trimmedTags,
       status: "new",
-      createdAt: nowIso(),
+      createdAt,
       isSeed: input.isSeed ?? false,
     };
+  }
+
+  addItem(input: NewLearningItemInput): LearningItem {
+    const item = this.buildLearningItem(input);
 
     const next = this.cloneStore();
     next.items.push(item);
     this.commit(next);
     return item;
+  }
+
+  addItemsIfMissing(inputs: NewLearningItemInput[]): LearningItem[] {
+    const contentKey = (item: Pick<LearningItem, "language" | "type" | "promptZh" | "answer" | "reading">) =>
+      [item.language, item.type, item.promptZh.trim(), item.answer.trim(), item.reading?.trim() ?? ""].join("\u0000");
+    const existingKeys = new Set(this.store.items.map(contentKey));
+    const createdAt = nowIso();
+    const added: LearningItem[] = [];
+
+    for (const input of inputs) {
+      const normalized = this.buildLearningItem(input, createdAt);
+      const key = contentKey(normalized);
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      added.push(normalized);
+    }
+
+    if (added.length === 0) return [];
+    const next = this.cloneStore();
+    next.items.push(...added);
+    this.commit(next);
+    return added.map((item) => ({ ...item, tags: [...item.tags] }));
   }
 
   removeItem(id: string): void {
