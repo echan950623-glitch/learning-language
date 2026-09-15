@@ -104,6 +104,11 @@ export interface LearningRepository {
    * 在這筆之前的作答序列＋這次改成 correct」重新推導排程，讓結果跟「當初就直接答對」
    * 完全一致，而不是在錯誤已經套用的排程上再疊加一次修正。
    * itemStatus／schedule／session 三者在同一次原子寫入內一起更新。
+   *
+   * 額外限制（P1 修復）：這筆必須同時是這個 (learningItemId, ability) **全域最新**的
+   * 一筆 attempt——如果之後（不論哪個 session）已經有更新的一筆，代表目前排程已經是
+   * 依那筆之後累積出來的，修正這筆舊的會讓排程倒退，會被拒絕、store 完全不變。目標
+   * 已經是 correct 時視為冪等，直接回傳目前狀態，不會有任何寫入。
    */
   markAttemptCorrect(input: MarkAttemptCorrectInput): RecordGradedAttemptResult;
   /** 放棄目前這個 in_progress session：標記 abandoned，不刪除已經產生的 attempt／排程。 */

@@ -411,6 +411,48 @@ export abstract class BaseLearningRepository implements LearningRepository {
 
     const ability: AbilityKind = attempt.exerciseType === "reading" ? "reading" : "recall";
 
+    // 冪等優先：這筆已經是 correct（例如重複點擊、或修正過一次後又被呼叫一次），不論
+    // 之後有沒有更新的作答，都沒有任何東西需要改變——直接回傳「目前」的排程／狀態
+    // （可能已經被更晚的作答推進過，如實回傳即可），不 clone-mutate-commit，避免「不可
+    // 做不必要寫入」（即使底層 persistSnapshot 這次剛好會失敗，也不該讓一個沒有實際
+    // 變更的呼叫因此拋錯）。這個分支不會動到任何資料，所以不受下面「不能讓排程倒退」
+    // 的限制影響，也不需要先做那項檢查。
+    if (attempt.result === "correct") {
+      const currentSchedule = next.scheduleStates.find(
+        (s) => s.learningItemId === attempt.learningItemId && s.ability === ability
+      );
+      if (!currentSchedule) {
+        throw new Error(
+          `markAttemptCorrect: learningItemId "${attempt.learningItemId}" 的 "${ability}" 排程狀態不存在，資料不一致`
+        );
+      }
+      return {
+        schedule: { ...currentSchedule },
+        itemStatus: item.status,
+        attempt: { ...attempt },
+        session: this.cloneSession(session),
+      };
+    }
+
+    // 精準修復（P1，GPT 獨立 review 發現）：completed session 永久保留，所以「這筆是不是
+    // 它自己 session 裡的最後一題」（上面已經檢查過）不足以保證它是這個 (item, ability)
+    // 全域最新的一筆——使用者可能在更晚的另一個 session B 已經對同一個 (item, ability)
+    // 再次作答過（正常複習流程），這時候若還放行修正這個舊 session 的 attempt，下面的
+    // 排程重算只會回放「這筆之前」的歷史＋這筆改成 correct，等於用一個更舊的排程直接
+    // 覆寫掉 session B 之後累積的真正目前排程，讓 streak／dueAt 倒退、抹掉之後的學習
+    // 進度。修法：只要這個 (item, ability) 在這筆之後（不分哪個 session）還有任何一筆
+    // 更新的 attempt，一律拒絕修正、store 完全不變（不 commit）。這比「重放這筆之後全部
+    // 歷史」更安全、更容易驗證正確；使用者的修正視窗本來就設計成「下一題之前」，正常
+    // 操作永遠不會觸發這個限制，只有繞過 UI 或跨分頁使用舊 session 參照時才會擋下來。
+    const hasNewerAttemptForSameAbility = next.reviewAttempts.some(
+      (a, idx) => idx > attemptIndex && a.learningItemId === attempt.learningItemId && a.exerciseType === attempt.exerciseType
+    );
+    if (hasNewerAttemptForSameAbility) {
+      throw new Error(
+        `markAttemptCorrect: learningItemId "${attempt.learningItemId}" 的 "${ability}" 能力在這筆之後已經有更新的作答紀錄，修正會讓目前排程倒退，已拒絕`
+      );
+    }
+
     // 重新推導排程：把這個 (item, ability) 在這筆之前的作答序列（按寫入順序，也就是
     // 時間順序）重新跑一遍 computeNextSchedule 得到「這筆發生前」的 streak／lapseCount，
     // 再用「correct」而不是原本的結果算一次——這樣結果會跟「當初就直接答對」完全一致，
