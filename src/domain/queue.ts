@@ -110,6 +110,18 @@ export function buildTodayQueue(
   };
 }
 
+/**
+ * 把完整佇列裁成一次學習的總題數。buildTodayQueue 已把到期複習排在新內容前面，
+ * 因此直接取前 N 題就能維持「複習優先，剩餘名額才補新內容」。
+ */
+export function limitTodayQueue(queue: TodayQueueResult, questionCount: number): TodayQueueResult {
+  const cap = Math.max(0, Math.floor(questionCount));
+  const units = queue.units.slice(0, cap);
+  const reviewUnits = units.filter((unit) => unit.kind === "review");
+  const newUnits = units.filter((unit) => unit.kind === "new");
+  return { reviewUnits, newUnits, units };
+}
+
 /** 依題數粗估完成分鐘數，至少 0 分鐘；有題目時至少顯示 1 分鐘，避免顯示「0 分鐘」誤導使用者。 */
 export function estimateMinutes(
   entryCount: number,

@@ -72,6 +72,18 @@ describe("initializeStudySession — 沒有既有 session", () => {
       expect(result.session.plannedUnits.length).toBeGreaterThan(0);
     }
   });
+
+  it("依設定建立 10 題 session，而不是固定只取 5 題新內容", () => {
+    const repository = new MemoryLearningRepository();
+    for (let index = 0; index < 12; index += 1) {
+      repository.addItem(jaInput({ promptZh: `單字 ${index}`, answer: `ことば${index}`, reading: `ことば${index}` }));
+    }
+
+    const result = initializeStudySession(repository, NOW, 10);
+
+    expect(result.phase).toBe("active");
+    if (result.phase === "active") expect(result.session.plannedUnits).toHaveLength(10);
+  });
 });
 
 describe("initializeStudySession — 恢復既有 in_progress session", () => {

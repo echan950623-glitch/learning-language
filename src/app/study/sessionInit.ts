@@ -10,8 +10,9 @@
  */
 
 import type { Language, LearningItem, StudySession, StudySessionPlannedUnit } from "@/domain/types";
-import { buildTodayQueue, DEFAULT_NEW_ITEM_SUGGESTION } from "@/domain/queue";
+import { buildTodayQueue, limitTodayQueue } from "@/domain/queue";
 import { describePersistenceError, type LearningRepository } from "@/repository";
+import { DEFAULT_STUDY_QUESTION_COUNT, type StudyQuestionCount } from "@/lib/studyPreferences";
 
 export interface SessionResumeEvaluation {
   /** 這個 in_progress session 是否可以直接恢復（尚未作答的題目引用的項目都還存在）。 */
@@ -53,7 +54,11 @@ export type StudyInitResult =
  *    不吞錯、不繼續、不假裝舊 session 是 active。
  * 3. 都沒有內容可學就是 empty。
  */
-export function initializeStudySession(repository: LearningRepository, now: Date): StudyInitResult {
+export function initializeStudySession(
+  repository: LearningRepository,
+  now: Date,
+  questionCount: StudyQuestionCount = DEFAULT_STUDY_QUESTION_COUNT
+): StudyInitResult {
   const items = repository.listItems({ language: "ja" });
   const itemsById = new Map(items.map((item) => [item.id, item]));
 
@@ -74,17 +79,21 @@ export function initializeStudySession(repository: LearningRepository, now: Date
     }
   }
 
-  return buildFreshSession(repository, items, itemsById, now);
+  return buildFreshSession(repository, items, itemsById, now, questionCount);
 }
 
 function buildFreshSession(
   repository: LearningRepository,
   items: LearningItem[],
   itemsById: Map<string, LearningItem>,
-  now: Date
+  now: Date,
+  questionCount: StudyQuestionCount
 ): StudyInitResult {
   const scheduleStates = repository.listScheduleStates({ language: "ja" });
-  const queueResult = buildTodayQueue(items, scheduleStates, now, DEFAULT_NEW_ITEM_SUGGESTION);
+  const queueResult = limitTodayQueue(
+    buildTodayQueue(items, scheduleStates, now, questionCount),
+    questionCount
+  );
 
   if (queueResult.units.length === 0) {
     return { phase: "empty" };

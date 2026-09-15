@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { computeSevenDayAccuracy, computeStatusCounts, type StatusCounts, type AccuracyResult } from "@/domain/stats";
-import { buildTodayQueue, estimateMinutes, DEFAULT_NEW_ITEM_SUGGESTION } from "@/domain/queue";
+import { buildTodayQueue, estimateMinutes, limitTodayQueue } from "@/domain/queue";
 import { getRepository } from "@/repository";
 import { StatCard } from "@/components/StatCard";
 import { STATUS_LABELS } from "@/lib/labels";
+import { readStudyQuestionCount } from "@/lib/studyPreferences";
 
 interface HomeData {
   dueCount: number;
@@ -29,7 +30,8 @@ export default function HomePage() {
     const attempts = repository.listReviewAttempts({ language: "ja" });
     const inProgressSession = repository.getInProgressSession("ja");
 
-    const queue = buildTodayQueue(items, scheduleStates, now, DEFAULT_NEW_ITEM_SUGGESTION);
+    const questionCount = readStudyQuestionCount();
+    const queue = limitTodayQueue(buildTodayQueue(items, scheduleStates, now, questionCount), questionCount);
     const statusCounts = computeStatusCounts(items, "ja");
     const accuracy = computeSevenDayAccuracy(attempts, "ja", now);
 

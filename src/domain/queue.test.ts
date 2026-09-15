@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTodayQueue, estimateMinutes } from "./queue";
+import { buildTodayQueue, estimateMinutes, limitTodayQueue } from "./queue";
 import type { LearningItem, ScheduleState } from "./types";
 
 const NOW = new Date("2026-09-14T09:00:00.000Z");
@@ -155,6 +155,44 @@ describe("buildTodayQueue — R1：含漢字讀音項目要跨多個佇列建立
 
     expect(result.newUnits[0]).toMatchObject({ item: { id: "pending-reading" }, ability: "reading" });
     expect(result.newUnits[1]).toMatchObject({ item: { id: "brand-new" }, ability: "recall" });
+  });
+});
+
+describe("limitTodayQueue", () => {
+  it("限制總題數為 10，並維持到期複習優先、剩餘名額才放新內容", () => {
+    const items = Array.from({ length: 14 }, (_, index) =>
+      makeItem({ id: `item-${index}`, createdAt: `2026-09-${String(index + 1).padStart(2, "0")}T00:00:00.000Z` })
+    );
+    const schedules = items.slice(0, 3).map((entry, index) =>
+      makeSchedule({ learningItemId: entry.id, ability: "recall", dueAt: `2026-09-14T0${index}:00:00.000Z` })
+    );
+    const full = buildTodayQueue(items, schedules, NOW, 20);
+
+    const limited = limitTodayQueue(full, 10);
+
+    expect(limited.units).toHaveLength(10);
+    expect(limited.reviewUnits).toHaveLength(3);
+    expect(limited.newUnits).toHaveLength(7);
+    expect(limited.units.slice(0, 3).every((unit) => unit.kind === "review")).toBe(true);
+    expect(full.units.length).toBeGreaterThan(10);
+  });
+
+  it("到期複習超過上限時只取最早到期的題目", () => {
+    const items = Array.from({ length: 12 }, (_, index) => makeItem({ id: `review-${index}` }));
+    const schedules = items.map((entry, index) =>
+      makeSchedule({
+        learningItemId: entry.id,
+        ability: "recall",
+        dueAt: `2026-09-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+      })
+    );
+    const limited = limitTodayQueue(buildTodayQueue(items, schedules, NOW, 10), 5);
+
+    expect(limited.reviewUnits).toHaveLength(5);
+    expect(limited.newUnits).toHaveLength(0);
+    expect(limited.units.map((unit) => unit.item.id)).toEqual([
+      "review-0", "review-1", "review-2", "review-3", "review-4",
+    ]);
   });
 });
 

@@ -20,6 +20,7 @@ import { getRepository, describePersistenceError } from "@/repository";
 import { EmptyState } from "@/components/EmptyState";
 import { Badge } from "@/components/Badge";
 import { abilityDisplayLabel } from "@/lib/labels";
+import { readStudyQuestionCount } from "@/lib/studyPreferences";
 import { initializeStudySession } from "./sessionInit";
 
 type Phase = "loading" | "empty" | "active" | "summary" | "error";
@@ -75,7 +76,7 @@ export default function StudyPage() {
   // 決策邏輯抽在 sessionInit.ts（純函式＋可測試），這裡只負責把結果映射成畫面狀態。
   useEffect(() => {
     const repository = getRepository();
-    const result = initializeStudySession(repository, new Date());
+    const result = initializeStudySession(repository, new Date(), readStudyQuestionCount());
 
     if (result.phase === "empty") {
       setPhase("empty");

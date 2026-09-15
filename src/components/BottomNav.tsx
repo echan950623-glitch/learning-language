@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { href: "/study", label: "今日學習", icon: "📖" },
   { href: "/add", label: "新增", icon: "➕" },
   { href: "/progress", label: "進度", icon: "📊" },
+  { href: "/settings", label: "設定", icon: "⚙️" },
 ] as const;
 
 /**
