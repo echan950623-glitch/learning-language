@@ -1,0 +1,360 @@
+import type {
+  AbilityKind,
+  Language,
+  LearningItem,
+  NewLearningItemInput,
+  ReviewAttempt,
+  ScheduleState,
+  StudySession,
+  StudySessionPlannedUnit,
+} from "../domain/types";
+import { combineAbilityStatuses, computeNextSchedule, deriveStatus } from "../domain/srs";
+import { requiredAbilities } from "../domain/abilities";
+import { generateId } from "../domain/id";
+import { nowIso } from "../domain/time";
+import type {
+  LanguageFilter,
+  LearningRepository,
+  RecordGradedAttemptInput,
+  RecordGradedAttemptResult,
+  RepositoryDurability,
+  StudySessionFilter,
+} from "./types";
+import type { PersistedStore } from "./schema";
+
+/**
+ * 共用的存取／變更邏輯。
+ *
+ * 2026-09-14 repair batch（R4）：所有變更都走「copy-on-write」——複製一份完整 store、
+ * 在複製品上修改、呼叫 `persistSnapshot(next)`；只有 `persistSnapshot` 沒有丟例外，
+ * 才會把 `this.store` 換成新版本。這保證：
+ * - 寫入失敗時 `this.store` 完全不變（不會出現「記憶體已經更新、但存檔沒成功」的分歧）。
+ * - 多個欄位要一起變的操作（評分：排程＋item status＋attempt＋session）只要放在同一次
+ *   clone→mutate→commit 裡，就是一次原子寫入，不會出現半套資料。
+ */
+export abstract class BaseLearningRepository implements LearningRepository {
+  protected store: PersistedStore;
+  abstract readonly durability: RepositoryDurability;
+
+  protected constructor(initialStore: PersistedStore) {
+    this.store = initialStore;
+  }
+
+  /**
+   * 子類別實作：把 nextStore 寫進真正的儲存媒介。
+   * 失敗必須 throw（建議 PersistenceFailedError）；成功就直接 return。
+   * 呼叫端（commit）保證只有在這裡沒有丟例外時才會採用 nextStore。
+   */
+  protected abstract persistSnapshot(nextStore: PersistedStore): void;
+
+  private commit(nextStore: PersistedStore): void {
+    this.persistSnapshot(nextStore);
+    this.store = nextStore;
+  }
+
+  private cloneStore(): PersistedStore {
+    return {
+      schemaVersion: this.store.schemaVersion,
+      items: this.store.items.map((item) => ({ ...item, tags: [...item.tags] })),
+      scheduleStates: this.store.scheduleStates.map((s) => ({ ...s })),
+      reviewAttempts: this.store.reviewAttempts.map((a) => ({ ...a })),
+      studySessions: this.store.studySessions.map((s) => ({
+        ...s,
+        plannedUnits: s.plannedUnits.map((u) => ({ ...u })),
+        exerciseResults: s.exerciseResults.map((r) => ({ ...r })),
+        newItemIds: [...s.newItemIds],
+        reviewItemIds: [...s.reviewItemIds],
+      })),
+    };
+  }
+
+  private cloneSession(session: StudySession): StudySession {
+    return {
+      ...session,
+      plannedUnits: session.plannedUnits.map((u) => ({ ...u })),
+      exerciseResults: session.exerciseResults.map((r) => ({ ...r })),
+      newItemIds: [...session.newItemIds],
+      reviewItemIds: [...session.reviewItemIds],
+    };
+  }
+
+  // ---- LearningItem -------------------------------------------------------
+
+  listItems(filter?: LanguageFilter): LearningItem[] {
+    const items = filter?.language
+      ? this.store.items.filter((item) => item.language === filter.language)
+      : this.store.items;
+    return items.map((item) => ({ ...item, tags: [...item.tags] }));
+  }
+
+  getItem(id: string): LearningItem | undefined {
+    const item = this.store.items.find((i) => i.id === id);
+    return item ? { ...item, tags: [...item.tags] } : undefined;
+  }
+
+  addItem(input: NewLearningItemInput): LearningItem {
+    const trimmedTags = input.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0);
+    const item: LearningItem = {
+      id: generateId("item"),
+      language: input.language,
+      type: input.type,
+      promptZh: input.promptZh.trim(),
+      answer: input.answer.trim(),
+      reading: input.reading?.trim() || undefined,
+      explanation: input.explanation?.trim() || undefined,
+      source: input.source,
+      tags: trimmedTags,
+      status: "new",
+      createdAt: nowIso(),
+      isSeed: input.isSeed ?? false,
+    };
+
+    const next = this.cloneStore();
+    next.items.push(item);
+    this.commit(next);
+    return item;
+  }
+
+  removeItem(id: string): void {
+    const next = this.cloneStore();
+    next.items = next.items.filter((item) => item.id !== id);
+    next.scheduleStates = next.scheduleStates.filter((s) => s.learningItemId !== id);
+    next.reviewAttempts = next.reviewAttempts.filter((a) => a.learningItemId !== id);
+    this.commit(next);
+  }
+
+  removeSeedItems(language?: Language): number {
+    const idsToRemove = new Set(
+      this.store.items
+        .filter((item) => item.isSeed && (!language || item.language === language))
+        .map((item) => item.id)
+    );
+    if (idsToRemove.size === 0) return 0;
+
+    const next = this.cloneStore();
+    next.items = next.items.filter((item) => !idsToRemove.has(item.id));
+    next.scheduleStates = next.scheduleStates.filter((s) => !idsToRemove.has(s.learningItemId));
+    next.reviewAttempts = next.reviewAttempts.filter((a) => !idsToRemove.has(a.learningItemId));
+    this.commit(next);
+    return idsToRemove.size;
+  }
+
+  // ---- ScheduleState --------------------------------------------------------
+
+  listScheduleStates(filter?: LanguageFilter): ScheduleState[] {
+    const list = filter?.language
+      ? this.store.scheduleStates.filter((s) => s.language === filter.language)
+      : this.store.scheduleStates;
+    return list.map((s) => ({ ...s }));
+  }
+
+  getScheduleState(learningItemId: string, ability: AbilityKind): ScheduleState | undefined {
+    const state = this.store.scheduleStates.find(
+      (s) => s.learningItemId === learningItemId && s.ability === ability
+    );
+    return state ? { ...state } : undefined;
+  }
+
+  // ---- ReviewAttempt --------------------------------------------------------
+
+  listReviewAttempts(filter?: LanguageFilter): ReviewAttempt[] {
+    const list = filter?.language
+      ? this.store.reviewAttempts.filter((a) => a.language === filter.language)
+      : this.store.reviewAttempts;
+    return list.map((a) => ({ ...a }));
+  }
+
+  // ---- StudySession -----------------------------------------------------
+
+  listStudySessions(filter?: StudySessionFilter): StudySession[] {
+    let list = filter?.language
+      ? this.store.studySessions.filter((s) => s.language === filter.language)
+      : this.store.studySessions;
+
+    // 預設只把「已完成」當成正式歷史；in_progress／abandoned 不該冒充完整紀錄
+    // （R3：進度頁不能把進行中或放棄的 session 當成已完成歷史）。
+    if ((filter?.status ?? "completed") === "completed") {
+      list = list.filter((s) => s.status === "completed");
+    }
+
+    list = [...list].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    if (filter?.limit !== undefined) {
+      list = list.slice(0, filter.limit);
+    }
+    return list.map((s) => this.cloneSession(s));
+  }
+
+  getInProgressSession(language: Language): StudySession | undefined {
+    const found = this.store.studySessions.find((s) => s.language === language && s.status === "in_progress");
+    return found ? this.cloneSession(found) : undefined;
+  }
+
+  getOrCreateInProgressSession(
+    language: Language,
+    plannedUnits: StudySessionPlannedUnit[],
+    now: Date
+  ): StudySession {
+    const existing = this.store.studySessions.find((s) => s.language === language && s.status === "in_progress");
+    if (existing) {
+      // 已經有進行中的 session：題目順序在建立當下就固定了，忽略這次傳入的候選佇列，
+      // 直接恢復既有 session，同一語言同時只會有一個 in_progress（R3 要求）。
+      return this.cloneSession(existing);
+    }
+
+    const dedupe = (ids: string[]): string[] => Array.from(new Set(ids));
+    const session: StudySession = {
+      id: generateId("session"),
+      language,
+      status: "in_progress",
+      startedAt: now.toISOString(),
+      plannedUnits: plannedUnits.map((u) => ({ ...u })),
+      exerciseResults: [],
+      newItemIds: dedupe(plannedUnits.filter((u) => u.kind === "new").map((u) => u.learningItemId)),
+      reviewItemIds: dedupe(plannedUnits.filter((u) => u.kind === "review").map((u) => u.learningItemId)),
+    };
+
+    const next = this.cloneStore();
+    next.studySessions.push(session);
+    this.commit(next);
+    return this.cloneSession(session);
+  }
+
+  abandonSession(sessionId: string): void {
+    const existing = this.store.studySessions.find((s) => s.id === sessionId);
+    if (!existing || existing.status !== "in_progress") {
+      // 不存在，或已經不是 in_progress：視為已經處理過，冪等地什麼都不做。
+      return;
+    }
+    const next = this.cloneStore();
+    const session = next.studySessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.status = "abandoned";
+    this.commit(next);
+  }
+
+  // ---- 評分（R1 多能力排程 + R3 session 更新 + R4 原子寫入，合在一次 commit） ----
+
+  recordGradedAttempt(input: RecordGradedAttemptInput): RecordGradedAttemptResult {
+    const next = this.cloneStore();
+
+    const item = next.items.find((i) => i.id === input.learningItemId);
+    if (!item) {
+      throw new Error(`recordGradedAttempt: learningItemId "${input.learningItemId}" 不存在，無法評分`);
+    }
+
+    const session = next.studySessions.find((s) => s.id === input.sessionId);
+    if (!session) {
+      throw new Error(`recordGradedAttempt: sessionId "${input.sessionId}" 不存在`);
+    }
+    if (session.status !== "in_progress") {
+      throw new Error(`recordGradedAttempt: session "${input.sessionId}" 已經是 ${session.status}，不能再評分`);
+    }
+
+    // 第三輪修復（精準修復 1）：不能只信任呼叫端傳來的 learningItemId／ability／exerciseType，
+    // 必須綁定 session 自己記錄的下一個 planned unit（由 exerciseResults.length 決定位置），
+    // 否則呼叫端傳錯 item／ability／exerciseType 仍會被誤判為「這一題」而更新排程、item 狀態
+    // 與 session，UI 保證不了正確性，這裡是最後一道防線。
+    const expectedIndex = session.exerciseResults.length;
+    const expectedUnit = session.plannedUnits[expectedIndex];
+    if (!expectedUnit) {
+      throw new Error(`recordGradedAttempt: session "${input.sessionId}" 已經沒有下一題可以評分`);
+    }
+    if (expectedUnit.learningItemId !== input.learningItemId) {
+      throw new Error(
+        `recordGradedAttempt: 這一題應該是 learningItemId "${expectedUnit.learningItemId}"，收到的是 "${input.learningItemId}"`
+      );
+    }
+    if (expectedUnit.ability !== input.ability) {
+      throw new Error(
+        `recordGradedAttempt: 這一題應該是 ability "${expectedUnit.ability}"，收到的是 "${input.ability}"`
+      );
+    }
+    if (input.exerciseType !== input.ability) {
+      throw new Error(
+        `recordGradedAttempt: exerciseType 必須符合 ability（recall→recall、reading→reading），收到 ability "${input.ability}" 搭配 exerciseType "${input.exerciseType}"`
+      );
+    }
+
+    // 冪等防重：同一題（同一 exerciseId）在這個 session 已經有作答紀錄就拒絕，
+    // 避免重複觸發（例如 UI 防護漏放）造成 duplicate attempt。
+    const alreadyRecorded = next.reviewAttempts.some(
+      (a) => a.sessionId === input.sessionId && a.exerciseId === input.exerciseId
+    );
+    if (alreadyRecorded) {
+      throw new Error(`recordGradedAttempt: exerciseId "${input.exerciseId}" 在這個 session 已經評分過`);
+    }
+
+    const scheduleIndex = next.scheduleStates.findIndex(
+      (s) => s.learningItemId === input.learningItemId && s.ability === input.ability
+    );
+    const previousPosition =
+      scheduleIndex >= 0
+        ? { streak: next.scheduleStates[scheduleIndex].streak, lapseCount: next.scheduleStates[scheduleIndex].lapseCount }
+        : null;
+    const computed = computeNextSchedule(previousPosition, input.result, input.now);
+
+    const nextSchedule: ScheduleState = {
+      learningItemId: input.learningItemId,
+      ability: input.ability,
+      language: item.language,
+      dueAt: computed.dueAt,
+      intervalDays: computed.intervalDays,
+      streak: computed.streak,
+      lapseCount: computed.lapseCount,
+      lastReviewedAt: input.now.toISOString(),
+    };
+    if (scheduleIndex >= 0) {
+      next.scheduleStates[scheduleIndex] = nextSchedule;
+    } else {
+      next.scheduleStates.push(nextSchedule);
+    }
+
+    // R1：整體 item status 要看這個項目「所有必要能力」的狀態合併結果，不能只看剛作答的這項。
+    const abilityStatuses = requiredAbilities(item).map((ability) => {
+      if (ability === input.ability) return computed.status;
+      const other = next.scheduleStates.find((s) => s.learningItemId === item.id && s.ability === ability);
+      return other ? deriveStatus(other.streak, other.lapseCount, true) : deriveStatus(0, 0, false);
+    });
+    const itemStatus = combineAbilityStatuses(abilityStatuses);
+    item.status = itemStatus;
+
+    const attempt: ReviewAttempt = {
+      id: generateId("attempt"),
+      exerciseId: input.exerciseId,
+      learningItemId: input.learningItemId,
+      language: item.language,
+      exerciseType: input.exerciseType,
+      sessionId: input.sessionId,
+      result: input.result,
+      usedHint: input.usedHint,
+      responseTimeMs: input.responseTimeMs,
+      reviewedAt: input.now.toISOString(),
+    };
+    next.reviewAttempts.push(attempt);
+
+    session.exerciseResults.push({
+      exerciseId: attempt.exerciseId,
+      learningItemId: attempt.learningItemId,
+      exerciseType: attempt.exerciseType,
+      result: attempt.result,
+      usedHint: attempt.usedHint,
+      responseTimeMs: attempt.responseTimeMs,
+    });
+
+    // 最後一題完成才設定 completedAt，且跟這次評分同一次寫入，不會有「最後一題已存、
+    // session 卻還沒標完成」的中間狀態。
+    if (session.exerciseResults.length >= session.plannedUnits.length) {
+      session.status = "completed";
+      session.completedAt = input.now.toISOString();
+    }
+
+    this.commit(next);
+
+    return {
+      schedule: { ...nextSchedule },
+      itemStatus,
+      attempt: { ...attempt },
+      session: this.cloneSession(session),
+    };
+  }
+}

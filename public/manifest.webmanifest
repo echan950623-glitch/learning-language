@@ -1,0 +1,16 @@
+{
+  "name": "AI 語言學習教練（日文優先原型）",
+  "short_name": "語言教練",
+  "description": "日文優先的主動回想學習與複習排程原型。資料只存在本機瀏覽器，尚未串接 AI／登入／雲端。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f6f2",
+  "theme_color": "#3d3aa8",
+  "orientation": "portrait",
+  "lang": "zh-TW",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

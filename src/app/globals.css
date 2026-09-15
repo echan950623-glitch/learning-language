@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f6f2;
+  --surface: #ffffff;
+  --surface-muted: #f0eee7;
+  --foreground: #211f1a;
+  --foreground-muted: #6b6558;
+  --border: #e4e1d6;
+  --primary: #3d3aa8;
+  --primary-foreground: #ffffff;
+  --accent: #b45309;
+  --success: #1f7a4d;
+  --success-bg: #e6f4ec;
+  --warning: #b45309;
+  --warning-bg: #fdf1e2;
+  --danger: #b3261e;
+  --danger-bg: #fbe9e8;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --font-sans: "Hiragino Sans", "Noto Sans TC", "Noto Sans JP", system-ui, "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #161512;
+    --surface: #211f1a;
+    --surface-muted: #2a2822;
+    --foreground: #f3f1ea;
+    --foreground-muted: #a8a294;
+    --border: #3a382f;
+    --primary: #8886d8;
+    --primary-foreground: #161512;
+    --accent: #e0a458;
+    --success: #6fd39c;
+    --success-bg: #17321f;
+    --warning: #e0a458;
+    --warning-bg: #34260f;
+    --danger: #f2938c;
+    --danger-bg: #3a1c19;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+/* 尊重使用者的減少動態偏好：把所有動畫／轉場壓到近乎瞬間，而不是完全移除（避免某些
+   依賴 transitionend 事件的邏輯卡住）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 讓鍵盤 focus 清楚可見，滑鼠點擊時不強制顯示 */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
