@@ -432,7 +432,10 @@ export default function StudyPage() {
         </div>
 
         {subPhase === "answering" ? (
-          <form onSubmit={handleSubmitAnswer} className="mt-auto flex flex-col gap-3">
+          <form
+            onSubmit={handleSubmitAnswer}
+            className="mt-[clamp(2rem,10dvh,5rem)] flex flex-col gap-3 sm:mt-auto"
+          >
             <div className="flex flex-col gap-1">
               <label htmlFor="attempt" className="text-sm font-medium text-foreground">
                 你的答案
@@ -448,7 +451,7 @@ export default function StudyPage() {
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}
-                className="rounded-lg border border-border bg-surface px-3 py-3 text-lg text-foreground"
+                className="scroll-mt-4 rounded-lg border border-border bg-surface px-3 py-3 text-lg text-foreground"
                 placeholder="輸入答案，按 Enter 或下方按鈕送出"
               />
             </div>
