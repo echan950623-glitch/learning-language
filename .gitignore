@@ -50,3 +50,6 @@ DEVLOG.md
 
 # MCP OAuth confidential client credentials (scripts/register-mcp-oauth-client.mjs output)
 .mcp-oauth-client.local.json
+
+# local Claude worktrees and session artifacts
+.claude/
