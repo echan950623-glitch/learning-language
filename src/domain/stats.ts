@@ -92,13 +92,19 @@ export interface AccuracyResult {
   sampleSize: number;
 }
 
-/** 近 7 日正確率：答對記 1 分、部分答對記 0.5 分、答錯記 0 分，取平均。 */
-export function computeSevenDayAccuracy(
+/**
+ * 近 N 日正確率：答對記 1 分、部分答對記 0.5 分、答錯記 0 分，取平均。
+ * 2026-09-16 雲端化：從固定 7 天改成可帶入天數，供 MCP `get_learning_context`
+ * 的 days=7|30 兩種視窗共用；`computeSevenDayAccuracy` 保留原名與行為，
+ * 內部直接呼叫這個函式，既有呼叫端與測試不受影響。
+ */
+export function computeAccuracyOverWindow(
   attempts: ReviewAttempt[],
   language: Language,
-  now: Date
+  now: Date,
+  days: number
 ): AccuracyResult {
-  const windowStart = addDays(now, -7).getTime();
+  const windowStart = addDays(now, -days).getTime();
   const relevant = attempts.filter(
     (attempt) => attempt.language === language && new Date(attempt.reviewedAt).getTime() >= windowStart
   );
@@ -115,6 +121,47 @@ export function computeSevenDayAccuracy(
 
   return {
     accuracyPercent: Math.round((score / relevant.length) * 100),
+    sampleSize: relevant.length,
+  };
+}
+
+/** 近 7 日正確率；等同 `computeAccuracyOverWindow(attempts, language, now, 7)`。 */
+export function computeSevenDayAccuracy(
+  attempts: ReviewAttempt[],
+  language: Language,
+  now: Date
+): AccuracyResult {
+  return computeAccuracyOverWindow(attempts, language, now, 7);
+}
+
+export interface HintRateResult {
+  /** 0～100 的整數百分比；sampleSize 為 0 時回傳 0 */
+  hintRatePercent: number;
+  sampleSize: number;
+}
+
+/**
+ * 近 N 日提示使用率：這段期間的作答中，用了提示的比例。給 MCP
+ * `get_learning_context` 用，目前 App 內的頁面尚未顯示這個指標。
+ */
+export function computeHintRateOverWindow(
+  attempts: ReviewAttempt[],
+  language: Language,
+  now: Date,
+  days: number
+): HintRateResult {
+  const windowStart = addDays(now, -days).getTime();
+  const relevant = attempts.filter(
+    (attempt) => attempt.language === language && new Date(attempt.reviewedAt).getTime() >= windowStart
+  );
+
+  if (relevant.length === 0) {
+    return { hintRatePercent: 0, sampleSize: 0 };
+  }
+
+  const hintCount = relevant.filter((attempt) => attempt.usedHint).length;
+  return {
+    hintRatePercent: Math.round((hintCount / relevant.length) * 100),
     sampleSize: relevant.length,
   };
 }

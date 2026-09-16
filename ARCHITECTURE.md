@@ -366,3 +366,469 @@ schema 會丟棄的資料）。
   session 或 item id 不存在）會丟出一般 `Error`（不是 `PersistenceFailedError`），代表
   呼叫端邏輯本身有誤，正常操作流程不該觸發；這跟「使用者可重試的持久化失敗」是刻意
   分開的兩種錯誤類別。
+
+---
+
+# 雲端化架構（2026-09-16）：Supabase 同步、Auth、MCP
+
+本節是**凍結的合約**，供三條並行工作分工依循：DB／安全（A）、App repository／sync／
+auth／migration（B）、MCP（C）。三者對彼此的介面（資料表、欄位、RPC 簽名、outbox
+操作型別、檔案路徑）都以本節為準；實作中如發現本節有具體錯誤或遺漏，依本節的整體
+意圖判斷並在交付報告中明確記錄偏離之處，不要靜默改變合約形狀。
+
+## 核心決策：Local-first + outbox，不是「雲端優先、本機當快取」
+
+**`LearningRepository` 介面、`BaseLearningRepository`、`LocalStorageLearningRepository`、
+`MemoryLearningRepository` 完全不變（0 個方法簽名變動）。** 這是刻意的架構選擇，不是
+偷懶：
+
+- 這三個檔案＋整個 `src/domain/`（SRS、佇列、出題、評分、統計）已經有 193 個通過的
+  測試，且是同步、零 I/O-per-question 的設計——`this.store` 是完整的記憶體快照，
+  `listItems`／`buildTodayQueue` 等讀取完全不碰網路。**這正好就是「進入 10 題 session
+  後切題不應每題重新下載」的要求**，不需要新機制，只需要不要破壞它。
+- 把整個介面改成 async（回傳 `Promise`）會牽動所有頁面元件與 193 個測試，卻換不到
+  任何實質好處——真正需要的只是「額外把已經發生的本機變更，背景推到 Supabase」。
+- 因此雲端能力用**組合（composition）**疊加，不是修改或子類化上述四個檔案：新增
+  `SyncingLearningRepository`（見下）包一層 `LocalStorageLearningRepository`，本機讀寫
+  完全走原本的同步路徑不變，額外做的事只有「寫入成功後，把這次做了什麼記進 outbox，
+  非阻塞地觸發背景同步」。
+
+## 資料流總覽
+
+```
+使用者操作
+  → SyncingLearningRepository.recordGradedAttempt(...)
+      1. inner.recordGradedAttempt(...)   ← 原本的 LocalStorageLearningRepository，完全不變，
+                                             失敗就整個拋出，不寫 outbox（沒發生的事不用同步）
+      2. 成功 → 組一筆 outbox entry（型別見下）→ outbox.enqueue(entry)（同步、localStorage）
+      3. syncEngine.kick()                 ← 非阻塞（不 await），背景嘗試 drain outbox
+  ← 立即回傳（跟現在完全一樣的使用者體感速度，UI 不等網路）
+
+SyncEngine（背景）
+  - drain: 依序取 outbox 最舊的一筆 → 呼叫對應的 Supabase 操作（見下「outbox 操作
+    對應表」）→ 成功就從 outbox 移除、繼續下一筆；失敗（網路／5xx）就停止 drain、
+    留在 outbox、之後（下次 kick、下次啟動、或指數退避計時器）重試；認證失效
+    （401）就標記需要重新登入、停止 drain。
+  - pull-merge（登入時／app 啟動時已登入）：抓遠端目前使用者的所有列，merge 進本機
+    store：遠端有、本機沒有的 id → 加入本機；本機有、遠端也有、且這筆目前沒有待送
+    outbox entry → 用遠端覆蓋本機（此時遠端理應更新，因為沒有本機在飛的變更）；
+    本機有待送 outbox entry → 保留本機（避免蓋掉還沒送出的變更）。這是刻意簡化的
+    「單一主要裝置＋離線間隙」模型，不是完整多裝置即時合併；已知限制見下方
+    「已知簡化」。
+```
+
+## 檔案 ownership（避免三邊互相覆寫）
+
+| 範圍 | 擁有者 | 路徑 |
+|---|---|---|
+| DB schema／RLS／RPC／Supabase client 工廠／型別 | A | `supabase/**`、`src/lib/supabase/**` |
+| Outbox／SyncEngine／migration／auth 頁面／偏好設定／同步狀態 UI | B | `src/repository/sync/**`、`src/repository/index.ts`（修改）、`src/app/auth/**`、`src/components/SyncStatusBanner.tsx`、`src/components/MigrationPanel.tsx`、`src/app/settings/page.tsx`（修改）、偏好設定相關 `src/lib/preferences/**` |
+| MCP server／OAuth consent UI／MCP 專用文件 | C | `src/app/mcp/**`、`src/app/oauth/**`、`src/app/api/oauth/**`、`src/app/.well-known/**`、`src/lib/mcp/**`、`scripts/register-mcp-oauth-client.mjs` |
+| 已由本輪先完成，三邊都可直接使用，不要重複修改 | 協調者（已完成） | `src/domain/romaji.ts`、`domain/types.ts` 的 `romaji`/`partOfSpeech`/`exampleSentence`、`domain/stats.ts` 的 `computeAccuracyOverWindow`/`computeHintRateOverWindow` |
+
+不要修改不屬於自己那一列的檔案；若發現必須修改共用檔案（例如 `domain/types.ts`
+需要再加欄位），在交付報告中明確提出，由整合階段處理，不要三邊各自改同一個共用檔案。
+
+## 環境變數（已存在於 gitignored `.env.local`，不得印出實際值）
+
+瀏覽器可用（`NEXT_PUBLIC_` 前綴）：`NEXT_PUBLIC_SUPABASE_URL`、
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`（優先於舊式 `NEXT_PUBLIC_SUPABASE_ANON_KEY`，
+兩者現況都存在，新程式一律用 publishable key）。
+
+僅伺服器可用（Route Handler／Server Component／腳本，絕對不能進到任何 client
+component 或瀏覽器 bundle）：`SUPABASE_URL`、`SUPABASE_SECRET_KEY`（新式，優先使用）、
+`SUPABASE_SERVICE_ROLE_KEY`（舊式，兩者現況都存在）、`SUPABASE_JWT_SECRET`（本輪不需要
+直接使用，OAuth 驗證走 `supabase.auth.getUser(token)`，不必自己 verify JWT）、
+`POSTGRES_URL_NON_POOLING`（migration／DDL 用直連，不要用連 pgbouncer 的
+`POSTGRES_URL` 跑 migration）。
+
+## 資料表（schema `public`，全部 `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY`）
+
+所有表都有 `user_id uuid not null references auth.users(id) on delete cascade`
+（直接存欄位，不用 join，RLS 判斷成本最低，跟現有本機模型在每個子紀錄冗餘存
+`language` 是同一種設計理由）。id 一律用 `text primary key`（沿用
+`src/domain/id.ts` 的 `generateId()` 格式，例如 `item_<uuid>`，不是原生
+Postgres `uuid` 型別）。
+
+### `learning_items`
+```
+id                text primary key
+user_id           uuid not null references auth.users(id) on delete cascade
+language          text not null check (language in ('ja','en'))
+type              text not null check (type in ('vocabulary','grammar','phrase','collocation'))
+prompt_zh         text not null
+answer            text not null
+reading           text
+explanation       text
+romaji            text
+part_of_speech    text
+example_sentence  text
+source            text not null check (source in ('ai','textbook','teacher','song','manual'))
+tags              text[] not null default '{}'
+status            text not null check (status in ('new','learning','mastered','struggling'))
+created_at        timestamptz not null
+is_seed           boolean not null default false
+content_key       text generated always as (
+                    language || '|' || type || '|' || prompt_zh || '|' || answer || '|' || coalesce(reading, '')
+                  ) stored
+updated_at        timestamptz not null default now()
+
+unique (user_id, content_key)   -- 跟本機 addItemsIfMissing 同一套內容去重鍵，見 baseRepository.ts 的 contentKey()
+index (user_id, language)
+```
+
+### `schedule_states`
+```
+user_id           uuid not null references auth.users(id) on delete cascade
+learning_item_id  text not null references learning_items(id) on delete cascade
+ability           text not null check (ability in ('recall','reading'))
+language          text not null check (language in ('ja','en'))
+due_at            timestamptz not null
+interval_days     integer not null check (interval_days > 0)
+streak            integer not null check (streak >= 0)
+lapse_count       integer not null check (lapse_count >= 0)
+last_reviewed_at  timestamptz
+updated_at        timestamptz not null default now()
+
+primary key (learning_item_id, ability)
+index (user_id, due_at)
+```
+
+### `study_sessions`
+```
+id               text primary key
+user_id          uuid not null references auth.users(id) on delete cascade
+language         text not null check (language in ('ja','en'))
+status           text not null check (status in ('in_progress','completed','abandoned'))
+started_at       timestamptz not null
+completed_at     timestamptz
+planned_units    jsonb not null   -- [{learningItemId, ability, kind}], 跟本機 StudySessionPlannedUnit[] 同形狀
+new_item_ids     text[] not null default '{}'
+review_item_ids  text[] not null default '{}'
+updated_at       timestamptz not null default now()
+```
+不儲存 `exercise_results`——正規化拆進 `review_attempts`，見下方欄位 `sequence_in_session`；
+需要重建時用 `select ... from review_attempts where session_id=? order by sequence_in_session`。
+
+### `review_attempts`
+```
+id                    text primary key
+user_id               uuid not null references auth.users(id) on delete cascade
+session_id            text not null references study_sessions(id) on delete cascade
+sequence_in_session   integer not null   -- 0-based，對應 study_sessions.planned_units 的位置
+seq                   bigint generated always as identity   -- 全域插入順序，見下方 mark_attempt_correct 的用途
+exercise_id           text not null
+learning_item_id      text not null references learning_items(id) on delete cascade
+language              text not null check (language in ('ja','en'))
+exercise_type         text not null check (exercise_type in ('recall','reading','spelling','translation'))
+result                text not null check (result in ('correct','partial','incorrect'))
+used_hint             boolean not null
+response_time_ms      integer not null check (response_time_ms >= 0)
+reviewed_at           timestamptz not null
+
+unique (session_id, exercise_id)       -- 冪等：同一題在同一 session 只能記一次
+unique (session_id, sequence_in_session)
+index (user_id, learning_item_id, exercise_type, seq)   -- markAttemptCorrect 的「是否有更新的作答」查詢
+index (user_id, reviewed_at)                             -- get_learning_context 的時間視窗查詢
+```
+
+`seq` 是 `mark_attempt_correct` 判斷「這個 (learning_item_id, exercise_type) 之後有沒有
+更新的作答」的依據，對應本機 `baseRepository.ts` 用**陣列插入順序**（不是時間戳記）
+判斷 `hasNewerAttemptForSameAbility` 的邏輯——必須用一個真正單調遞增、不受用戶端時鐘
+影響的欄位重現同一個保證，用 `reviewed_at` 時間戳記不夠精確（理論上可能相同或亂序）。
+
+### `user_preferences`
+```
+user_id                 uuid primary key references auth.users(id) on delete cascade
+daily_question_count    integer not null default 10 check (daily_question_count in (5,10,15,20))
+daily_new_item_cap      integer not null default 10 check (daily_new_item_cap > 0 and daily_new_item_cap <= 50)
+updated_at              timestamptz not null default now()
+```
+`daily_new_item_cap` 是本輪新增的偏好（PRODUCT 要求「每日新字上限，預設 10」）；
+B 需要把它接進 `buildTodayQueue(...)` 呼叫端目前傳 `questionCount` 當
+`newItemLimit` 的位置（`src/app/page.tsx`、`src/app/study/sessionInit.ts` 等），改傳這個
+獨立設定值，預設 10 讓現有行為不明顯改變。
+
+## RLS 政策（`to authenticated`；`(auth.jwt() ->> 'client_id') IS NULL` 代表「只有這個
+App 自己的一般登入 session，不是 MCP／OAuth client 拿到的 token」——這是唯一 MCP
+權限窄化的依據，見 Supabase 官方 OAuth Server 文件的 `client_id` claim）
+
+- `learning_items`：SELECT（`auth.uid()=user_id`，MCP 可讀，供 inventory／context 使用）；
+  INSERT／UPDATE（`auth.uid()=user_id`，MCP 與 App 都可以——MCP 的 `add_vocabulary_batch`
+  需要 INSERT 權限；UPDATE 是給 App 的 RPC 更新 `status` 用，MCP 不會呼叫 UPDATE 但沒有
+  技術理由禁止讀寫自己新增的欄位）；DELETE（`auth.uid()=user_id AND (auth.jwt()->>'client_id') IS NULL`
+  —— **只有 App 自己能刪字，MCP 永遠不能刪**，直接對應 PRODUCT 的「不可刪除單字」）。
+- `schedule_states`：SELECT（`auth.uid()=user_id`）；INSERT／UPDATE
+  （`auth.uid()=user_id AND (auth.jwt()->>'client_id') IS NULL`，只有 App 走 RPC 寫）；
+  沒有 DELETE 政策（沒有人需要直接刪，靠 `learning_items` 的
+  `on delete cascade` 自然清除）。
+- `review_attempts`：SELECT（`auth.uid()=user_id`，MCP 讀取用於 `get_learning_context`
+  的正確率／提示率／錯題統計）；INSERT／UPDATE
+  （`auth.uid()=user_id AND (auth.jwt()->>'client_id') IS NULL`，只有 App 的 RPC 寫，
+  **MCP 永遠不能寫入或改動歷史作答**，對應 PRODUCT 的「不可改歷史 attempt」）；
+  沒有 DELETE 政策。
+- `study_sessions`：SELECT／INSERT／UPDATE 全部
+  `auth.uid()=user_id AND (auth.jwt()->>'client_id') IS NULL`——**MCP 完全不能碰這張表**
+  （4 個工具都用不到 session 明細，維持「窄權限」）。
+- `user_preferences`：SELECT／INSERT／UPDATE 全部
+  `auth.uid()=user_id AND (auth.jwt()->>'client_id') IS NULL`——同樣 MCP 完全不能碰。
+
+上述任何一個 UPDATE 政策都必須同時寫 `USING` 與 `WITH CHECK`（否則能把一列的
+`user_id` 改成別人的），INSERT 只需要 `WITH CHECK`，SELECT／DELETE 只需要 `USING`。
+
+## RPC（只需要這 2 個；其餘操作都是單表單一陳述式，Postgres 本身已保證原子性，
+不需要額外包 RPC——這是刻意的精簡，不是遺漏）
+
+兩者都用預設的 `SECURITY INVOKER`（呼叫者的 RLS 照常套用，`auth.uid()` 是呼叫者），
+**不要用 `SECURITY DEFINER`**（會繞過 RLS，且 `public` schema 下任何角色預設都能執行，
+等同開一個公開的權限提升端點）。函式內任何一步失敗（`raise exception`）都會讓整個
+函式的效果自動 rollback（Postgres 函式呼叫本身就是單一陳述式的事務邊界），這就是
+PRODUCT 要求的「單一 transaction/RPC，不能拆成多個易部分成功的請求」。
+
+客戶端（`SyncingLearningRepository`／`SyncEngine`）呼叫這兩個 RPC 時，**排程數值
+（schedule／itemStatus）是本機已經用 `src/domain/srs.ts` 算好的最終結果，RPC 不重新
+計算 SRS**——這是刻意的信任邊界：SRS 數學已经有 193 個測試在 TypeScript 驗證過，
+在 SQL 重寫一份等於兩套邏輯要同步維護，且這是單人使用的個人資料，使用者「竄改自己
+的複習排程」不是資訊安全問題（不影響其他使用者），真正的安全邊界是
+`auth.uid() = user_id`（別人拿不到你的 token）與欄位 CHECK constraint（防止結構性壞
+資料，例如負數 streak）。RPC 仍會重新核對 **結構性**不變量（session 存在且
+`in_progress`、`sequence_in_session` 與 `planned_units` 對得上、冪等性），只是不重算
+數學。
+
+### `record_graded_attempt(payload jsonb) returns jsonb`
+
+輸入形狀（`SyncingLearningRepository` 從 `recordGradedAttempt` 的 input 與回傳值組出來）：
+```jsonc
+{
+  "session_id": "...", "learning_item_id": "...", "ability": "recall|reading",
+  "exercise_id": "...", "exercise_type": "recall|reading|spelling|translation",
+  "result": "correct|partial|incorrect", "used_hint": false, "response_time_ms": 1200,
+  "reviewed_at": "2026-...Z",
+  "schedule": { "due_at": "...", "interval_days": 1, "streak": 1, "lapse_count": 0 },
+  "item_status": "new|learning|mastered|struggling",
+  "session_completed": false, "session_completed_at": null
+}
+```
+行為：
+1. `select` session by `id=session_id and user_id=auth.uid()`；不存在或
+   `status<>'in_progress'` → `raise exception`（呼叫端邏輯錯誤，比照本機同名檢查）。
+2. 用 `(select count(*) from review_attempts where session_id=payload.session_id)`
+   當 expected index，核對 `session.planned_units[expected_index]` 的
+   `learningItemId`／`ability` 與 payload 相符（比照本機「精準修復 1」的檢查，這是
+   結構性核對，不是重算 SRS）。
+3. `insert into review_attempts (...) values (...) on conflict (session_id, exercise_id)
+   do nothing returning id` → 若沒有回傳列（重複送出）：查現有列＋現有
+   `schedule_states`／`learning_items.status`／`study_sessions` 現況，原樣回傳，
+   **不做任何後續寫入**（冪等 no-op，這正是離線重送不會造成重複 attempt/session 的
+   機制）。
+4. 若有回傳列（第一次寫入）：
+   - `insert into schedule_states (...) values (...) on conflict (learning_item_id, ability)
+     do update set due_at=excluded.due_at, interval_days=excluded.interval_days,
+     streak=excluded.streak, lapse_count=excluded.lapse_count,
+     last_reviewed_at=excluded.last_reviewed_at, updated_at=now()`
+   - `update learning_items set status=payload.item_status, updated_at=now()
+     where id=payload.learning_item_id and user_id=auth.uid()`
+   - `update study_sessions set status = case when payload.session_completed then 'completed'
+     else status end, completed_at = payload.session_completed_at, updated_at=now()
+     where id=payload.session_id and user_id=auth.uid()`
+5. 回傳 `{ schedule, item_status, attempt, session }`（跟本機
+   `RecordGradedAttemptResult` 同樣的欄位涵蓋範圍，命名可以是 snake_case，由 B 在
+   `SyncEngine` 端做欄位名轉換，不需要 RPC 刻意輸出 camelCase）。
+
+### `mark_attempt_correct(payload jsonb) returns jsonb`
+
+輸入形狀：`{ session_id, exercise_id, schedule: {...同上}, item_status }`（不需要
+`result`，一定是改成 `correct`）。行為：
+1. 找 `review_attempts` by `(session_id, exercise_id)` and `user_id=auth.uid()`；
+   不存在 → `raise exception`。
+2. 若 `result='correct'` → 冪等：原樣回傳現況（`schedule_states`／`learning_items`／
+   該筆 attempt），**不做任何寫入**（比照本機「已經是 correct 視為冪等」，即使這裡
+   假設性地遇到寫入問題也不該報錯，因為根本沒有嘗試寫入）。
+3. 核對「這是這個 session 目前最後一筆」：
+   `not exists (select 1 from review_attempts where session_id=payload.session_id
+   and sequence_in_session > target.sequence_in_session)`；不成立 → `raise exception`。
+4. 核對「這個 (learning_item_id, exercise_type) 之後沒有更新的作答」（用 `seq`，
+   不是 `reviewed_at`）：
+   `not exists (select 1 from review_attempts where learning_item_id=target.learning_item_id
+   and exercise_type=target.exercise_type and seq > target.seq)`；不成立 →
+   `raise exception`（比照本機 P1 修復：拒絕會讓排程倒退的修正）。
+5. 都通過：`update review_attempts set result='correct' where id=target.id`；
+   upsert `schedule_states`（同上 on conflict do update）；`update learning_items
+   set status=payload.item_status`。**不需要更新 `study_sessions`**（正規化後
+   session 本身不存 exercise_results，這點跟本機版本不同，本機需要同步更新
+   session.exerciseResults 陣列，這裡不用）。
+6. 回傳同上形狀。
+
+## Outbox 操作型別與對應的 Supabase 呼叫（B 負責實作，A 提供的 RPC／表是它的呼叫對象）
+
+```ts
+type OutboxOperation =
+  | { type: "upsert_item"; payload: LearningItemRow }                       // .upsert(row, {onConflict:'id'})
+  | { type: "delete_items"; payload: { ids: string[] } }                    // .delete().in('id', ids)
+  | { type: "upsert_schedule_state"; payload: ScheduleStateRow }            // .upsert(row, {onConflict:'learning_item_id,ability'})（僅 migration／初始匯入直接用；一般作答流程走 record_graded_attempt RPC）
+  | { type: "upsert_session"; payload: StudySessionRow }                    // .upsert(row, {onConflict:'id'})（建立／恢復 in_progress）
+  | { type: "abandon_session"; payload: { sessionId: string } }             // .update({status:'abandoned'}).eq('id', sessionId)
+  | { type: "record_graded_attempt"; payload: RecordGradedAttemptRpcInput } // .rpc('record_graded_attempt', {payload})
+  | { type: "mark_attempt_correct"; payload: MarkAttemptCorrectRpcInput }   // .rpc('mark_attempt_correct', {payload})
+  | { type: "upsert_preferences"; payload: UserPreferencesRow };            // .upsert(row, {onConflict:'user_id'})
+```
+每筆 outbox entry：`{ id: string; type: OutboxOperation["type"]; payload: object;
+createdAt: string; attempts: number; lastError?: string }`，存在獨立 localStorage key
+（例如 `learning-language:sync-outbox`），有自己的、比照 `schema.ts` 精神的輕量
+sanitize（壞掉的 outbox 內容安全回退成空陣列，絕對不能讓 outbox 損毀連帶讓主要
+`PersistedStore` 也讀不出來——兩個 key 完全獨立）。
+
+## 一次性 migration（localStorage v2 → Supabase）＝ 重用 outbox，不要另寫一套
+
+`runInitialMigration()`：
+1. **偵測**：登入後，本機 store 任一集合非空，且
+   `localStorage["learning-language:migration-completed:<user_id>"]` 不存在。
+2. **備份**：把目前完整 `PersistedStore` JSON 存一份到
+   `learning-language:store:pre-migration-backup:<timestamp>`（只新增、不覆蓋、
+   永不自動刪除）。
+3. **推送＝批次 enqueue**：依序把每個 `LearningItem` → `upsert_item`、每個
+   `ScheduleState` → `upsert_schedule_state`、每個 `StudySession` → `upsert_session`、
+   每個 `ReviewAttempt` → 需要先算出 `sequence_in_session`（遍歷該 attempt 所屬
+   session 的 `exerciseResults`，用 `exerciseId` 找到它在陣列中的 index）再組成等同
+   `record_graded_attempt` payload 的資料**直接 upsert 進 `review_attempts` 表**
+   （不透過 RPC——migration 是把已經發生的歷史寫進去，不是即時評分，不需要 RPC
+   的「這是不是下一題」即時性檢查；但仍要保留同一個 session 內 attempts 依
+   `exerciseResults` 陣列原始順序**依序、單一 multi-row insert 或依序個別 insert**
+   寫入，讓 `seq`（identity 欄位）保留正確的相對插入順序，這是之後
+   `mark_attempt_correct` 判斷「有沒有更新作答」正確性的前提）、每個
+   `UserPreferences` → `upsert_preferences`。全部進同一個 outbox，然後
+   **await 完整 drain**（不是 fire-and-forget），過程中更新畫面進度
+   （已同步筆數／總筆數）。
+4. **核對**：drain 完成後，`select count(*)` 各表（`user_id=auth.uid()`）跟本機
+   對應集合的長度比較；全部 `>=` 本機數字才算成功（`>=` 而不是 `=`，因為可能是
+   重試、遠端已經有更多、或先前部分匯入過）。
+5. **標記完成＋顯示結果**：全部核對通過才寫入
+   `migration-completed:<user_id>=true`，畫面顯示各類別筆數；任何一類不足，
+   顯示「哪幾類尚未完成」並保留重試按鈕（重試永遠安全，見下）。
+6. **絕不刪除本機資料**——成功後本機 store 繼續當作快取正常運作，不做任何清空。
+7. **處理部分匯入**：因為每一步都是 `upsert`／`on conflict`，重新整批 enqueue＋drain
+   在任何時候重跑都是安全的（已經同步過的列變成無用功的 no-op，不會重複或報錯），
+   这就是「可重試且 idempotent」與「能處理已部分匯入」的完整答案，不需要另外設計
+   「從哪裡繼續」的邏輯。
+
+## MCP（C 負責；四個工具全部走一般 Supabase client＋使用者的 OAuth access token，
+RLS 自然生效，不使用 service role）
+
+### Auth／OAuth
+- 依 Supabase 官方文件 `https://supabase.com/docs/guides/auth/oauth-server/*`：
+  Supabase Auth 本身就是 OAuth 2.1 Server（beta），簽出的 access token 是一般
+  Supabase JWT，多一個 `client_id` claim。**MCP 不用自己實作 OAuth AS**，只要：
+  1. 專案 Dashboard 啟用 OAuth Server（見文末 runbook，這是 dashboard beta 開關，
+     C 無法自己開）＋設定 Authorization Path（建議 `/oauth/consent`）。
+  2. `/mcp` 收到請求時，從 `Authorization: Bearer <token>` 抽 token，呼叫
+     （用只帶 publishable key 建立的 client）`supabase.auth.getUser(token)` 驗證；
+     失敗回 401 並帶 `WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource"`。
+  3. 驗證通過後，**用該 token 建立這次請求專用的 Supabase client**
+     （`createClient(url, publishableKey, { global: { headers: { Authorization:
+     'Bearer ' + token } } })`），所有查詢都用這個 client 送出，讓 RLS 用
+     `auth.uid()` 自動限定成這個使用者、`client_id` claim 自動讓上面的 RESTRICTIVE
+     範圍生效。**絕對不要在 `/mcp` 或任何工具程式碼裡用 `SUPABASE_SECRET_KEY`
+     建 client**（service role 會繞過 RLS，等於幫每個 MCP client 開後門）。
+  4. 建立 `src/app/.well-known/oauth-protected-resource/route.ts`：回傳
+     `{ resource: "https://<host>/mcp", authorization_servers: ["<NEXT_PUBLIC_SUPABASE_URL>/auth/v1"] }`
+     （MCP 用戶端會先讀這個，再去讀 Supabase 自己的
+     `/.well-known/oauth-authorization-server/auth/v1`）。
+  5. 建立 `/oauth/consent`（Server Component）＋
+     `/api/oauth/decision`（Route Handler）：完全比照 Supabase 官方文件
+     「Getting Started with OAuth 2.1 Server」的 Next.js 範例（`getAuthorizationDetails`
+     / `approveAuthorization` / `denyAuthorization`），改成本專案的 zh-TW 文案與
+     既有 Tailwind 視覺風格；未登入要導去 B 建立的 `/auth/sign-in`
+     （帶回 `authorization_id`）。
+
+### `/mcp` route（Node runtime，不是 Edge）
+- `export const runtime = "nodejs"`。用 `@modelcontextprotocol/sdk`
+  （已安裝 `^1.30.0`）的 Streamable HTTP transport；先讀套件內
+  `node_modules/@modelcontextprotocol/sdk` 的型別與 README 確認目前這個版本的
+  確切 API（SDK 版本更新頻繁，不要照記憶寫），再實作，不要臆測方法名稱。
+- 4 個工具全部：輸入輸出都用 `zod` schema 定義（已安裝 `^4.6.5`）；讀取類工具
+  標 `annotations: { readOnlyHint: true, destructiveHint: false }`；
+  `add_vocabulary_batch` 標 `annotations: { readOnlyHint: false, destructiveHint: false,
+  idempotentHint: true }` **並且在工具 description 文字裡明講「執行前必須先呼叫
+  preview_vocabulary_batch 並取得使用者明確確認」**——因為不同 MCP host 對
+  annotation 的支援程度不一，文字描述是唯一保證每個 host 都看得到的channel。
+
+### 四個工具的資料邏輯（全部重用 `src/domain/*` 既有且已測試的純函式，
+不要在 MCP 這層重新實作 SRS／統計數學）
+
+1. **`get_learning_context({ days: 7 | 30 })`**：用該使用者的 client 查
+   `learning_items`（依 language 分兩批或一次查完再用 language 分組）、
+   `schedule_states`、`review_attempts`（`reviewed_at >= now()-days`）。用
+   `src/domain/stats.ts` 的 `computeStatusCounts`／`computeAbilityStatusCounts`／
+   `computeAccuracyOverWindow`／`computeHintRateOverWindow`／
+   `computeUpcomingReviewOverview`，`src/domain/practice.ts` 的
+   `buildWrongAnswerUnits`（錯題），組成輸出：每語言的
+   `{ masteryBreakdown, dueCount, accuracy, hintRate, byAbility: {recall, reading},
+   wrongAnswerCount, studyVolume }`。
+2. **`get_vocabulary_inventory`**：查該使用者全部 `learning_items`（可加
+   `limit`，預設例如 500，avoid 無上限查詢），依 `content_key` 分組找重複、依
+   `tags` 分佈統計、依 `language`/`type` 分佈統計。
+3. **`preview_vocabulary_batch(items)`**：**不寫入**。逐筆驗證必要欄位
+   （`promptZh`/`answer` 必填；`reading`/`romaji`/`partOfSpeech`/`exampleSentence`/
+   `tags` 可選但若提供必須是非空字串／字串陣列）；若提供 `romaji`，用
+   `src/domain/romaji.ts` 的 `romajiMatchesReading(reading, romaji)` 核對，不一致
+   時**不擋（不是 error）**，而是回報 warning 並附上系統推導的正確羅馬拼音；
+   若沒提供 `romaji`，直接用 `toRomaji(reading)` 補上（不算 warning，這是正常
+   補值）。查詢現有 `learning_items` 的 `content_key` 找出「已存在」重複，
+   同時檢查批次內部彼此重複。回傳
+   `{ validItems: [...含系統補值後的完整內容], duplicates: [...], errors: [...] }`。
+4. **`add_vocabulary_batch({ items, confirm: true })`**：`confirm` 用
+   `z.literal(true)`（不能省略、不能是 false），輸入形狀跟 preview 完全一樣的
+   `items`。**重新完整跑一次跟 preview 一樣的驗證**（不信任呼叫端「已經 preview
+   過」的宣稱，見下方安全理由），驗證通過的項目才
+   `.upsert(rows, { onConflict: 'user_id,content_key', ignoreDuplicates: true })
+   .select()`；比較輸入與回傳，回報 `{ inserted: [...], skippedDuplicates: [...],
+   errors: [...] }`。新項目一律 `status: 'new'`、`source: 'ai'`——不需要另外實作
+   「新字不要一次全塞進今天」的機制，`status:'new'` 的項目本來就只會被
+   `buildTodayQueue` 依既有的每日新內容上限逐步排入，這是現有機制自然覆蓋的行為。
+
+   **為什麼 add 要重新驗證，不能只信任「已 preview」**：MCP 呼叫是無狀態的
+   HTTP 請求，且 preview 與 add 之間可能相隔任意時間（使用者在確認前跟真人或
+   模型討論），這段時間資料庫可能已經改變（例如另一個裝置已經新增了同樣的字）；
+   重新驗證是免費的（就是同一組查詢），比維護一個簽章 token 或伺服器端 session
+   狀態更簡單、也更正確（不會有「token 過期」或「伺服器重啟遺失狀態」這類新故障
+   模式，天然適配 serverless／Fluid Compute 的無狀態特性）。這是刻意不做
+   簽章 preview token 的理由，不要另外加。
+
+## 測試策略（真實 DB 部分，A／C 都會用到）
+
+- Vitest 目前設定 `environment: "node"`、不會自動載入 `.env.local`。需要真實
+  Supabase 連線的測試檔，在測試檔或一個共用 setup 檔開頭用 Node 內建
+  `process.loadEnvFile('.env.local')`（Node 20.6+／本專案 `@types/node: ^26`
+  肯定支援，不需要額外裝 `dotenv`）載入，並在檔案開頭偵測
+  `process.env.SUPABASE_SECRET_KEY` 不存在時 `describe.skip`（讓沒有
+  `.env.local` 的環境仍能跑 `npm test` 而不是整個失敗）。
+- **驗證 RLS（含 `client_id` 限制）不需要真的走一次 OAuth flow**：Supabase 官方
+  文件示範用 `SET request.jwt.claims = '{"sub":"...","role":"authenticated",
+  "client_id":"..."}'` 在一般 SQL 連線裡模擬任意 JWT claims 直接測 policy——用
+  `pg` 對 `POSTGRES_URL_NON_POOLING` 開連線，在測試裡對每個關鍵 policy 跑
+  「這個 claims 組合應該擋下來／應該放行」的斷言，比架設整條 OAuth consent
+  flow 更直接、更適合自動化測試。
+- 需要真實使用者做整合測試時（不是只測 policy 本身），用
+  `SUPABASE_SECRET_KEY` 建立 admin client，`supabase.auth.admin.createUser(...)`
+  建立一到兩個測試帳號，測完在 `afterAll` 用
+  `supabase.auth.admin.deleteUser(...)` 清除，不留測試帳號在 Production 專案裡。
+- 任何測試輸出都不能印出 token／secret 的實際值，只能印布林、數量、id 等
+  非敏感診斷資訊。
+
+## 已知簡化（誠實標示，比照本檔既有風格，不是隱藏限制）
+
+- Pull-merge 是「單一主要裝置＋離線間隙」模型：沒有做真正的多裝置即時
+  雙向合併／欄位級衝突解決；本機有 pending outbox entry 時一律「本機優先」，
+  沒有 pending entry 時一律「遠端覆蓋本機」。對「一支手機、偶爾離線」的實際
+  使用情境已經足夠，多裝置同時離線編輯同一筆資料是本輪刻意不處理的情境。
+- Migration／pull 都沒有做「遠端已刪除、本機還留著」的刪除同步（tombstone）；
+  `removeItem`／`removeSeedItems` 的刪除靠 outbox 的 `delete_items` 正常推送，
+  但反向（別的裝置刪除後，這台裝置的本機快取不會主動移除）不在本輪範圍內。
+- MCP 沒有實作 dynamic client registration 的濫用防護（例如 client 白名單、
+  註冊速率限制）——Supabase 官方文件本身也把這列為「啟用前要考慮」的項目；
+  本輪預設走**手動預先註冊**單一 OAuth client（見 runbook），不啟用 dynamic
+  registration，降低攻擊面，之後真的需要多個第三方 client 再評估開啟。
+- `record_graded_attempt`／`mark_attempt_correct` 信任客戶端算好的 SRS 數值（見
+  上方「為什麼」說明），不是重新計算——這對單人個人資料是合理取捨，但代表
+  這兩個 RPC **不適合**未來如果這個專案變成多人共用／教師指派他人複習計畫的
+  情境下直接沿用，屆時需要重新評估是否要把 SRS 計算搬進資料庫。

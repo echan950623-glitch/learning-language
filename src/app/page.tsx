@@ -8,7 +8,7 @@ import { buildTodayQueue, estimateMinutes, limitTodayQueue } from "@/domain/queu
 import { getRepository } from "@/repository";
 import { StatCard } from "@/components/StatCard";
 import { STATUS_LABELS } from "@/lib/labels";
-import { readStudyQuestionCount } from "@/lib/studyPreferences";
+import { readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
 import { buildFullReviewUnits, buildWrongAnswerUnits } from "@/domain/practice";
 
 interface HomeData {
@@ -34,7 +34,8 @@ export default function HomePage() {
     const inProgressSession = repository.getInProgressSession("ja");
 
     const questionCount = readStudyQuestionCount();
-    const queue = limitTodayQueue(buildTodayQueue(items, scheduleStates, now, questionCount), questionCount);
+    const newItemCap = readDailyNewItemCap();
+    const queue = limitTodayQueue(buildTodayQueue(items, scheduleStates, now, newItemCap), questionCount);
     const statusCounts = computeStatusCounts(items, "ja");
     const accuracy = computeSevenDayAccuracy(attempts, "ja", now);
     const fullReviewUnits = buildFullReviewUnits(items, attempts);

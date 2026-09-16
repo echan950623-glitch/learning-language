@@ -45,6 +45,15 @@ export interface LearningItem {
   reading?: string;
   /** 簡短說明，可選 */
   explanation?: string;
+  /**
+   * 羅馬拼音；MCP 匯入時由 `src/domain/romaji.ts` 從 `reading` 確定性推導或驗證
+   * （2026-09-16 雲端化新增，可選欄位，向後相容，不需要 schemaVersion 升版）。
+   */
+  romaji?: string;
+  /** 詞性（例：名詞／動詞／い形容詞），自由文字，不做枚舉限制 */
+  partOfSpeech?: string;
+  /** 例句，可選 */
+  exampleSentence?: string;
   source: ItemSource;
   tags: string[];
   status: ItemStatus;
@@ -154,6 +163,9 @@ export interface NewLearningItemInput {
   answer: string;
   reading?: string;
   explanation?: string;
+  romaji?: string;
+  partOfSpeech?: string;
+  exampleSentence?: string;
   source: ItemSource;
   tags: string[];
   isSeed?: boolean;

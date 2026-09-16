@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   computeAbilityStatusCounts,
+  computeAccuracyOverWindow,
+  computeHintRateOverWindow,
   computeSevenDayAccuracy,
   computeStatusCounts,
   computeUpcomingReviewOverview,
@@ -104,6 +106,61 @@ describe("computeSevenDayAccuracy", () => {
   it("沒有資料時回傳 sampleSize 0 且不崩潰", () => {
     const result = computeSevenDayAccuracy([], "ja", NOW);
     expect(result).toEqual({ accuracyPercent: 0, sampleSize: 0 });
+  });
+});
+
+describe("computeAccuracyOverWindow", () => {
+  it("30 天視窗會納入 7 天視窗會排除的紀錄", () => {
+    const attempts: ReviewAttempt[] = [
+      makeAttempt({ id: "old", result: "correct", reviewedAt: "2026-08-25T00:00:00.000Z" }), // 20 天前
+      makeAttempt({ id: "recent", result: "incorrect" }),
+    ];
+
+    expect(computeSevenDayAccuracy(attempts, "ja", NOW).sampleSize).toBe(1);
+    const thirtyDay = computeAccuracyOverWindow(attempts, "ja", NOW, 30);
+    expect(thirtyDay.sampleSize).toBe(2);
+    // (1 + 0) / 2 = 0.5 → 50%
+    expect(thirtyDay.accuracyPercent).toBe(50);
+  });
+
+  it("computeSevenDayAccuracy 等同 days=7 的特例", () => {
+    const attempts: ReviewAttempt[] = [makeAttempt({ id: "1", result: "correct" })];
+    expect(computeSevenDayAccuracy(attempts, "ja", NOW)).toEqual(computeAccuracyOverWindow(attempts, "ja", NOW, 7));
+  });
+});
+
+describe("computeHintRateOverWindow", () => {
+  it("計算視窗內使用提示的比例", () => {
+    const attempts: ReviewAttempt[] = [
+      makeAttempt({ id: "1", usedHint: true }),
+      makeAttempt({ id: "2", usedHint: true }),
+      makeAttempt({ id: "3", usedHint: false }),
+      makeAttempt({ id: "4", usedHint: false }),
+    ];
+
+    const result = computeHintRateOverWindow(attempts, "ja", NOW, 7);
+    expect(result).toEqual({ hintRatePercent: 50, sampleSize: 4 });
+  });
+
+  it("排除視窗外的紀錄", () => {
+    const attempts: ReviewAttempt[] = [
+      makeAttempt({ id: "old", usedHint: true, reviewedAt: "2026-08-01T00:00:00.000Z" }),
+      makeAttempt({ id: "recent", usedHint: false }),
+    ];
+    expect(computeHintRateOverWindow(attempts, "ja", NOW, 7)).toEqual({ hintRatePercent: 0, sampleSize: 1 });
+  });
+
+  it("日文與英文互不影響", () => {
+    const attempts: ReviewAttempt[] = [
+      makeAttempt({ id: "ja-1", language: "ja", usedHint: true }),
+      makeAttempt({ id: "en-1", language: "en", usedHint: false }),
+    ];
+    expect(computeHintRateOverWindow(attempts, "ja", NOW, 7).hintRatePercent).toBe(100);
+    expect(computeHintRateOverWindow(attempts, "en", NOW, 7).hintRatePercent).toBe(0);
+  });
+
+  it("沒有資料時回傳 sampleSize 0 且不崩潰", () => {
+    expect(computeHintRateOverWindow([], "ja", NOW, 30)).toEqual({ hintRatePercent: 0, sampleSize: 0 });
   });
 });
 

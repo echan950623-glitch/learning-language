@@ -12,7 +12,12 @@
 import type { Language, LearningItem, StudySession, StudySessionPlannedUnit } from "@/domain/types";
 import { buildTodayQueue, limitTodayQueue } from "@/domain/queue";
 import { describePersistenceError, type LearningRepository } from "@/repository";
-import { DEFAULT_STUDY_QUESTION_COUNT, type StudyQuestionCount } from "@/lib/studyPreferences";
+import {
+  DEFAULT_DAILY_NEW_ITEM_CAP,
+  DEFAULT_STUDY_QUESTION_COUNT,
+  type DailyNewItemCap,
+  type StudyQuestionCount,
+} from "@/lib/studyPreferences";
 
 export interface SessionResumeEvaluation {
   /** 這個 in_progress session 是否可以直接恢復（尚未作答的題目引用的項目都還存在）。 */
@@ -57,7 +62,8 @@ export type StudyInitResult =
 export function initializeStudySession(
   repository: LearningRepository,
   now: Date,
-  questionCount: StudyQuestionCount = DEFAULT_STUDY_QUESTION_COUNT
+  questionCount: StudyQuestionCount = DEFAULT_STUDY_QUESTION_COUNT,
+  newItemCap: DailyNewItemCap = DEFAULT_DAILY_NEW_ITEM_CAP
 ): StudyInitResult {
   const items = repository.listItems({ language: "ja" });
   const itemsById = new Map(items.map((item) => [item.id, item]));
@@ -79,7 +85,7 @@ export function initializeStudySession(
     }
   }
 
-  return buildFreshSession(repository, items, itemsById, now, questionCount);
+  return buildFreshSession(repository, items, itemsById, now, questionCount, newItemCap);
 }
 
 function buildFreshSession(
@@ -87,11 +93,12 @@ function buildFreshSession(
   items: LearningItem[],
   itemsById: Map<string, LearningItem>,
   now: Date,
-  questionCount: StudyQuestionCount
+  questionCount: StudyQuestionCount,
+  newItemCap: DailyNewItemCap
 ): StudyInitResult {
   const scheduleStates = repository.listScheduleStates({ language: "ja" });
   const queueResult = limitTodayQueue(
-    buildTodayQueue(items, scheduleStates, now, questionCount),
+    buildTodayQueue(items, scheduleStates, now, newItemCap),
     questionCount
   );
 

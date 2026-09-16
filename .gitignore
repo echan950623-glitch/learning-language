@@ -45,3 +45,8 @@ next-env.d.ts
 
 # private local development log
 DEVLOG.md
+
+.env*
+
+# MCP OAuth confidential client credentials (scripts/register-mcp-oauth-client.mjs output)
+.mcp-oauth-client.local.json

@@ -24,6 +24,11 @@
  *   的狀態）。
  * - 缺少必要陣列（不是陣列、或欄位不存在）視為 fallback 訊號，不會被靜默當成合法空陣列。
  * - 有 v1 → v2 migration，合法 v1 資料會被保留並轉換，不會整包丟棄。
+ *
+ * 2026-09-16 雲端化：LearningItem 新增 `romaji`／`partOfSpeech`／`exampleSentence`
+ * 三個可選欄位（供 MCP 匯入單字使用）。純粹新增可選欄位、舊資料缺少這些欄位時
+ * `isOptionalString(undefined)` 仍然通過，屬於向後相容的加法變更，不需要
+ * schemaVersion 升版、也不需要新的 migration 函式。
  */
 
 import type {
@@ -153,6 +158,9 @@ export function isLearningItem(value: unknown): value is LearningItem {
     isNonEmptyString(value.answer) &&
     isOptionalString(value.reading) &&
     isOptionalString(value.explanation) &&
+    isOptionalString(value.romaji) &&
+    isOptionalString(value.partOfSpeech) &&
+    isOptionalString(value.exampleSentence) &&
     ITEM_SOURCES.includes(value.source as ItemSource) &&
     isStringArray(value.tags) &&
     ITEM_STATUSES.includes(value.status as ItemStatus) &&
