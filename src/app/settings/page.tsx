@@ -15,6 +15,7 @@ import {
   type StudyQuestionCount,
 } from "@/lib/studyPreferences";
 import { MigrationPanel } from "@/components/MigrationPanel";
+import { AccountSyncPanel } from "@/components/AccountSyncPanel";
 
 export default function SettingsPage() {
   const [selected, setSelected] = useState<StudyQuestionCount>(DEFAULT_STUDY_QUESTION_COUNT);
@@ -61,6 +62,7 @@ export default function SettingsPage() {
         <p className="mt-1 text-sm text-foreground-muted">調整下一次「今日學習」或自主複習要完成的總題數。</p>
       </header>
 
+      <AccountSyncPanel />
       <MigrationPanel />
 
       <section aria-labelledby="question-count" className="rounded-2xl border border-border bg-surface p-4">
