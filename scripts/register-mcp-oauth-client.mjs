@@ -11,17 +11,17 @@
  * 用法：
  *   node scripts/register-mcp-oauth-client.mjs <redirect_uri> [<redirect_uri> ...]
  *
- * 結果（client_id／client_secret）會寫進 gitignored 的 .mcp-oauth-client.local.json，
+ * 結果（client_id／client_secret）會寫進 gitignored 的 .env.mcp.local，
  * 不會印到 stdout／stderr——client_secret 是真正的憑證，不能留在終端機紀錄或 log 裡。
  */
 import { createClient } from "@supabase/supabase-js";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 process.loadEnvFile(".env.local");
 
 const CLIENT_NAME = "learning-language-mcp";
-const OUTPUT_PATH = path.resolve(process.cwd(), ".mcp-oauth-client.local.json");
+const OUTPUT_PATH = path.resolve(process.cwd(), ".env.mcp.local");
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -34,16 +34,27 @@ function requireEnv(name) {
 
 async function main() {
   const redirectUris = process.argv.slice(2);
+  if (existsSync(OUTPUT_PATH)) {
+    console.error(".env.mcp.local 已存在，停止註冊以保留原有憑證。");
+    process.exit(1);
+    return;
+  }
   if (redirectUris.length === 0) {
     console.error(
       "用法: node scripts/register-mcp-oauth-client.mjs <redirect_uri> [<redirect_uri> ...]\n" +
-        "例如: node scripts/register-mcp-oauth-client.mjs https://claude.ai/api/mcp/auth_callback"
+        "請使用 ChatGPT MCP 管理畫面顯示的完整 redirect URI，不要猜測 callback ID。"
     );
     process.exit(1);
     return;
   }
 
   const url = requireEnv("SUPABASE_URL");
+  for (const uri of redirectUris) {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== "https:" || parsed.hash || parsed.username || parsed.password) {
+      throw new Error("redirect URI 必須是無帳密與 fragment 的 HTTPS URL。");
+    }
+  }
   const secretKey = requireEnv("SUPABASE_SECRET_KEY");
 
   const adminClient = createClient(url, secretKey, {
@@ -57,7 +68,14 @@ async function main() {
   try {
     const { data, error } = await adminClient.auth.admin.oauth.listClients();
     if (error) throw error;
+    // Auth may return an empty object when no clients exist; auth-js adds
+    // pagination keys but leaves `clients` absent in that response.
     existingClients = data.clients;
+    if (!existingClients && data.total === 0 &&
+        Object.keys(data).every((key) => ["nextPage", "lastPage", "total"].includes(key))) {
+      existingClients = [];
+    }
+    if (!Array.isArray(existingClients)) throw new Error("OAuth clients 回應格式不符，停止註冊以免建立重複 client。");
   } catch (error) {
     console.error("【註冊 MCP OAuth Client】無法列出既有 OAuth clients，OAuth Server 功能可能尚未啟用:", {
       message: error instanceof Error ? error.message : String(error),
@@ -97,20 +115,19 @@ async function main() {
     });
     if (error) throw error;
 
+    if (!data?.client_id || !data?.client_secret) {
+      throw new Error("OAuth client 回應缺少憑證，請確認 Dashboard client 狀態後再處理，不要重複註冊。");
+    }
+
     writeFileSync(
       OUTPUT_PATH,
-      JSON.stringify(
-        {
-          client_id: data.client_id,
-          client_secret: data.client_secret,
-          redirect_uris: data.redirect_uris,
-          created_at: data.created_at,
-          note: "這個檔案含有真正的 OAuth client secret，已經被 .gitignore 排除，不要手動加入版本控制或分享出去。",
-        },
-        null,
-        2
-      ),
-      { mode: 0o600 }
+      [
+        `MCP_OAUTH_CLIENT_ID=${JSON.stringify(data.client_id)}`,
+        `MCP_OAUTH_CLIENT_SECRET=${JSON.stringify(data.client_secret)}`,
+        `MCP_OAUTH_REDIRECT_URIS=${JSON.stringify(JSON.stringify(data.redirect_uris))}`,
+        "",
+      ].join("\n"),
+      { mode: 0o600, flag: "wx" }
     );
 
     console.log(`OAuth client 建立成功，client_id／client_secret 已寫入 ${OUTPUT_PATH}`);

@@ -48,7 +48,7 @@ export async function POST(req: Request): Promise<Response> {
 
   if (!user) {
     const redirectTarget = `/oauth/consent?authorization_id=${encodeURIComponent(authorizationId)}`;
-    return NextResponse.redirect(new URL(`/auth/sign-in?redirect=${encodeURIComponent(redirectTarget)}`, req.url));
+    return NextResponse.redirect(new URL(`/auth/sign-in?redirect=${encodeURIComponent(redirectTarget)}`, req.url), 303);
   }
 
   try {
@@ -58,7 +58,8 @@ export async function POST(req: Request): Promise<Response> {
         : await supabase.auth.oauth.denyAuthorization(authorizationId, { skipBrowserRedirect: true });
 
     if (error) throw error;
-    return NextResponse.redirect(data.redirect_url);
+    // The decision is a form POST; OAuth callbacks must be navigated with GET.
+    return NextResponse.redirect(data.redirect_url, 303);
   } catch (error) {
     console.error("【OAuth 授權決定】處理授權決定失敗:", {
       message: error instanceof Error ? error.message : String(error),
