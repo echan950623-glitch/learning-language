@@ -66,6 +66,36 @@ export function readSyncablePreferences(
   };
 }
 
+/**
+ * 把雲端已存在的偏好寫回本機，不觸發新的 outbox。初始 migration 用它避免新裝置的預設值
+ * 反過來覆蓋帳戶原本的設定。兩個舊版 storage key 以 best-effort rollback 維持一起成功。
+ */
+export function applySyncedPreferences(
+  preferences: { dailyQuestionCount: StudyQuestionCount; dailyNewItemCap: DailyNewItemCap },
+  storage: Storage | undefined = browserStorage()
+): void {
+  if (!isStudyQuestionCount(preferences.dailyQuestionCount)) throw new Error("雲端每次學習題數不合法");
+  if (!isDailyNewItemCap(preferences.dailyNewItemCap)) throw new Error("雲端每日新字上限不合法");
+  if (!storage) throw new Error("這個瀏覽器目前無法保存設定");
+
+  const previousQuestionCount = storage.getItem(STORAGE_KEY);
+  const previousNewItemCap = storage.getItem(NEW_ITEM_CAP_STORAGE_KEY);
+  try {
+    storage.setItem(STORAGE_KEY, String(preferences.dailyQuestionCount));
+    storage.setItem(NEW_ITEM_CAP_STORAGE_KEY, String(preferences.dailyNewItemCap));
+  } catch (error) {
+    try {
+      if (previousQuestionCount === null) storage.removeItem(STORAGE_KEY);
+      else storage.setItem(STORAGE_KEY, previousQuestionCount);
+      if (previousNewItemCap === null) storage.removeItem(NEW_ITEM_CAP_STORAGE_KEY);
+      else storage.setItem(NEW_ITEM_CAP_STORAGE_KEY, previousNewItemCap);
+    } catch {
+      // 原始錯誤仍要往上丟；rollback 失敗不能把「同步偏好已成功」偽裝出來。
+    }
+    throw error;
+  }
+}
+
 export function saveStudyQuestionCount(
   count: StudyQuestionCount,
   storage: Storage | undefined = browserStorage()

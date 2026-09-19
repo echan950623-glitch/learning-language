@@ -26,7 +26,7 @@ import {
   type PersistedStore,
 } from "../schema";
 import {
-  enqueueOutboxEntry,
+  enqueueLatestPreferences,
   listOutboxEntries,
   markOutboxEntryFailed,
   outboxPendingCount,
@@ -549,7 +549,7 @@ function scheduleRetry(): void {
 /** 偏好設定（studyPreferences.ts）在成功保存到本機之後呼叫；未設定雲端同步時是純 no-op。 */
 export function notifyPreferencesChanged(preferences: { dailyQuestionCount: number; dailyNewItemCap: number }): void {
   if (!activeConfig) return;
-  enqueueOutboxEntry({ type: "upsert_preferences", payload: preferencesToRow(preferences, activeConfig.userId) });
+  enqueueLatestPreferences(preferencesToRow(preferences, activeConfig.userId));
   kick();
 }
 

@@ -354,11 +354,23 @@ export function createFakeSupabaseClient(db: FakeSupabaseDatabase = new FakeSupa
       return new FakeQueryBuilder(db.table(table));
     },
     async rpc(name: string, args: { payload: Row }) {
+      if (name === "upsert_preferences_guarded") {
+        const table = db.tables.user_preferences;
+        const existing = table.rows.find((row) => row.user_id === args.payload.user_id);
+        if (existing) {
+          Object.assign(existing, args.payload, { updated_at: "2026-09-20T00:00:00.000Z" });
+          return { data: existing, error: null, status: 200 };
+        }
+        const inserted = table.upsert(
+          [{ ...args.payload, updated_at: "2026-09-20T00:00:00.000Z" }],
+          ["user_id"]
+        );
+        return { data: inserted.data?.[0] ?? null, error: inserted.error, status: inserted.status };
+      }
       const guardedTables: Record<string, { table: string; keys: string[]; ignored?: string[] }> = {
         upsert_learning_item_guarded: { table: "learning_items", keys: ["id"] },
         upsert_schedule_state_guarded: { table: "schedule_states", keys: ["learning_item_id", "ability"] },
         upsert_study_session_guarded: { table: "study_sessions", keys: ["id"] },
-        upsert_preferences_guarded: { table: "user_preferences", keys: ["user_id"] },
         upsert_review_attempt_guarded: { table: "review_attempts", keys: ["session_id", "exercise_id"], ignored: ["id"] },
       };
       const guarded = guardedTables[name];

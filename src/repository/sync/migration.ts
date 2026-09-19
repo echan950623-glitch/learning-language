@@ -12,9 +12,16 @@
 
 import type { LearningRepository } from "../types";
 import { readPersistedStore, SCHEMA_VERSION, type PersistedStore } from "../schema";
-import { readSyncablePreferences } from "../../lib/studyPreferences";
 import {
+  applySyncedPreferences,
+  readSyncablePreferences,
+  type DailyNewItemCap,
+  type StudyQuestionCount,
+} from "../../lib/studyPreferences";
+import {
+  enqueueLatestPreferences,
   enqueueOutboxEntries,
+  listOutboxEntries,
   learningItemToRow,
   outboxPendingCount,
   preferencesToRow,
@@ -346,6 +353,59 @@ export interface MigrationDeps {
   userId: string;
 }
 
+async function resolvePreferencesForMigration(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<{ dailyQuestionCount: StudyQuestionCount; dailyNewItemCap: DailyNewItemCap }> {
+  const localBeforeQuery = readSyncablePreferences();
+  const pendingBeforeQuery = listOutboxEntries()
+    .filter((entry) => entry.type === "upsert_preferences" && entry.payload.user_id === userId)
+    .at(-1);
+  const { data, error } = await supabase
+    .from("user_preferences")
+    .select("daily_question_count,daily_new_item_cap")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw new Error(`讀取雲端偏好失敗：${error.message}`);
+
+  // 查詢雲端後重讀本機狀態。背景 kick 可能已送出並移除查詢前的 pending；也可能在
+  // SELECT 等待期間又收到使用者的新選擇。兩者都不能被較早取得的雲端快照覆蓋。
+  const localAfterQuery = readSyncablePreferences();
+  const pendingAfterQuery = listOutboxEntries()
+    .filter((entry) => entry.type === "upsert_preferences" && entry.payload.user_id === userId)
+    .at(-1);
+  const pending = pendingAfterQuery ?? pendingBeforeQuery;
+  const localChangedDuringQuery =
+    localAfterQuery.dailyQuestionCount !== localBeforeQuery.dailyQuestionCount ||
+    localAfterQuery.dailyNewItemCap !== localBeforeQuery.dailyNewItemCap;
+  if (pendingAfterQuery?.type === "upsert_preferences") {
+    const latestLocalChoice = {
+      dailyQuestionCount: pendingAfterQuery.payload.daily_question_count as StudyQuestionCount,
+      dailyNewItemCap: pendingAfterQuery.payload.daily_new_item_cap as DailyNewItemCap,
+    };
+    applySyncedPreferences(latestLocalChoice);
+    return latestLocalChoice;
+  }
+  if (localChangedDuringQuery) return localAfterQuery;
+  if (pending?.type === "upsert_preferences") {
+    const latestLocalChoice = {
+      dailyQuestionCount: pending.payload.daily_question_count as StudyQuestionCount,
+      dailyNewItemCap: pending.payload.daily_new_item_cap as DailyNewItemCap,
+    };
+    applySyncedPreferences(latestLocalChoice);
+    return latestLocalChoice;
+  }
+
+  if (!data) return localBeforeQuery;
+
+  const remote = {
+    dailyQuestionCount: data.daily_question_count as StudyQuestionCount,
+    dailyNewItemCap: data.daily_new_item_cap as DailyNewItemCap,
+  };
+  applySyncedPreferences(remote);
+  return remote;
+}
+
 let isRunning = false;
 
 /**
@@ -367,7 +427,8 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
     const scheduleStates = deps.repository.listScheduleStates();
     const reviewAttempts = deps.repository.listReviewAttempts();
     const studySessions = deps.repository.listStudySessions({ status: "all" });
-    const preferences = readSyncablePreferences();
+    // 帳戶已經有雲端偏好時，以雲端值初始化這個裝置；避免新裝置的 10/10 預設反向覆蓋。
+    const preferences = await resolvePreferencesForMigration(deps.supabase, deps.userId);
 
     const hasAnyLocalData =
       items.length > 0 || scheduleStates.length > 0 || reviewAttempts.length > 0 || studySessions.length > 0;
@@ -418,10 +479,10 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
     for (const schedule of scheduleStates) {
       operations.push({ type: "upsert_schedule_state", payload: scheduleStateToRow(schedule, deps.userId) });
     }
-    operations.push({ type: "upsert_preferences", payload: preferencesToRow(preferences, deps.userId) });
-
     enqueueOutboxEntries(operations);
-    const total = operations.length;
+    // 偏好沒有歷史語意；重試或連續點選時只保留最新值，不能一點就多一筆永久待送。
+    enqueueLatestPreferences(preferencesToRow(preferences, deps.userId));
+    const total = operations.length + 1;
     setStatus({ phase: "running", progress: { completed: 0, total } });
 
     const drainResult = await drainOutboxFully(

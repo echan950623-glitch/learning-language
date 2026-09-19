@@ -452,6 +452,23 @@ export function enqueueOutboxEntry(operation: OutboxOperation): OutboxEntry {
   return entry;
 }
 
+/** 偏好是每個帳戶各一份可變設定；同帳戶尚未送出的舊值沒有歷史語意，只保留最後一次選擇。 */
+export function enqueueLatestPreferences(payload: UserPreferencesRow): OutboxEntry {
+  const entry: OutboxEntry = {
+    type: "upsert_preferences",
+    payload,
+    id: generateId("outbox"),
+    createdAt: nowIso(),
+    attempts: 0,
+  };
+  const entries: OutboxEntry[] = readOutboxEntries().filter(
+    (candidate): boolean => candidate.type !== "upsert_preferences" || candidate.payload.user_id !== payload.user_id
+  );
+  entries.push(entry);
+  writeOutboxEntries(entries);
+  return entry;
+}
+
 /** 批次 enqueue，單一次讀寫（migration 大量匯入用，避免每筆都各自讀寫一次 localStorage）。 */
 export function enqueueOutboxEntries(operations: OutboxOperation[]): OutboxEntry[] {
   if (operations.length === 0) return [];

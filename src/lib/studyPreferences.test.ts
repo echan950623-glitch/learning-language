@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { MemoryStorage } from "@/test/localStorageMock";
 import {
+  applySyncedPreferences,
   DEFAULT_STUDY_QUESTION_COUNT,
+  readDailyNewItemCap,
   readStudyQuestionCount,
   saveStudyQuestionCount,
 } from "./studyPreferences";
@@ -35,5 +37,12 @@ describe("每次學習題數設定", () => {
       throw new DOMException("blocked", "SecurityError");
     };
     expect(readStudyQuestionCount(brokenStorage)).toBe(10);
+  });
+
+  it("套用雲端偏好時不經通知流程，兩個值一起寫回本機", () => {
+    const storage = new MemoryStorage();
+    applySyncedPreferences({ dailyQuestionCount: 15, dailyNewItemCap: 20 }, storage);
+    expect(readStudyQuestionCount(storage)).toBe(15);
+    expect(readDailyNewItemCap(storage)).toBe(20);
   });
 });

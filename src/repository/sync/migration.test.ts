@@ -3,8 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { installMockLocalStorage, type MemoryStorage } from "../../test/localStorageMock";
 import { LocalStorageLearningRepository } from "../localStorageRepository";
+import { applySyncedPreferences, readDailyNewItemCap, readStudyQuestionCount } from "../../lib/studyPreferences";
 import { readPersistedStore, writePersistedStore, type PersistedStore } from "../schema";
-import { __clearOutboxForTests, listOutboxEntries } from "./outbox";
+import { __clearOutboxForTests, enqueueOutboxEntries, listOutboxEntries, removeOutboxEntry } from "./outbox";
 import { __resetSyncEngineForTests } from "./syncEngine";
 import {
   __resetMigrationForTests,
@@ -324,6 +325,173 @@ describe("runInitialMigration：部分上傳後重試", () => {
     expect(db.tables.learning_items.rows).toHaveLength(1);
     expect(db.tables.schedule_states.rows[0]).toMatchObject({ learning_item_id: "item_remote", interval_days: 3, streak: 2 });
     expect(readPersistedStore().items[0].id).toBe("item_local");
+  });
+});
+
+describe("runInitialMigration：偏好設定", () => {
+  it("帳戶已有雲端偏好時先套用到新裝置，不讓本機預設值覆蓋", async () => {
+    const db = new FakeSupabaseDatabase();
+    db.tables.user_preferences.rows.push({
+      user_id: USER_ID,
+      daily_question_count: 15,
+      daily_new_item_cap: 20,
+      updated_at: "2026-09-19T00:00:00.000Z",
+    });
+    const client = createFakeSupabaseClient(db);
+    writePersistedStore({
+      schemaVersion: 2,
+      items: [{
+        id: "item_local",
+        language: "ja",
+        type: "vocabulary",
+        promptZh: "狗",
+        answer: "犬",
+        reading: "いぬ",
+        source: "manual",
+        tags: [],
+        status: "new",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        isSeed: false,
+      }],
+      scheduleStates: [],
+      reviewAttempts: [],
+      studySessions: [],
+    });
+
+    const status = await runInitialMigration({
+      repository: new LocalStorageLearningRepository(),
+      supabase: client as unknown as SupabaseClient,
+      userId: USER_ID,
+    });
+
+    expect(status.phase).toBe("completed");
+    expect(readStudyQuestionCount(storage)).toBe(15);
+    expect(readDailyNewItemCap(storage)).toBe(20);
+    expect(db.tables.user_preferences.rows[0]).toMatchObject({
+      daily_question_count: 15,
+      daily_new_item_cap: 20,
+    });
+    expect(listOutboxEntries()).toHaveLength(0);
+  });
+
+  it("重試時保留 outbox 中最後一次本機選擇，不被雲端舊值覆蓋", async () => {
+    const db = new FakeSupabaseDatabase();
+    db.tables.user_preferences.rows.push({
+      user_id: USER_ID,
+      daily_question_count: 10,
+      daily_new_item_cap: 10,
+      updated_at: "2026-09-19T00:00:00.000Z",
+    });
+    enqueueOutboxEntries([
+      { type: "upsert_preferences", payload: { user_id: USER_ID, daily_question_count: 15, daily_new_item_cap: 10 } },
+      { type: "upsert_preferences", payload: { user_id: USER_ID, daily_question_count: 20, daily_new_item_cap: 5 } },
+    ]);
+    writePersistedStore({
+      schemaVersion: 2,
+      items: [{
+        id: "item_local",
+        language: "ja",
+        type: "vocabulary",
+        promptZh: "狗",
+        answer: "犬",
+        reading: "いぬ",
+        source: "manual",
+        tags: [],
+        status: "new",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        isSeed: false,
+      }],
+      scheduleStates: [],
+      reviewAttempts: [],
+      studySessions: [],
+    });
+
+    const status = await runInitialMigration({
+      repository: new LocalStorageLearningRepository(),
+      supabase: asClient(createFakeSupabaseClient(db)),
+      userId: USER_ID,
+    });
+
+    expect(status.phase).toBe("completed");
+    expect(readStudyQuestionCount(storage)).toBe(20);
+    expect(readDailyNewItemCap(storage)).toBe(5);
+    expect(db.tables.user_preferences.rows[0]).toMatchObject({
+      daily_question_count: 20,
+      daily_new_item_cap: 5,
+    });
+    expect(listOutboxEntries()).toHaveLength(0);
+  });
+
+  it("查詢期間背景同步送出 pending 後，仍不讓較舊的雲端快照覆蓋新選擇", async () => {
+    const db = new FakeSupabaseDatabase();
+    const stalePreference = {
+      user_id: USER_ID,
+      daily_question_count: 10,
+      daily_new_item_cap: 10,
+      updated_at: "2026-09-19T00:00:00.000Z",
+    };
+    db.tables.user_preferences.rows.push({ ...stalePreference });
+    applySyncedPreferences({ dailyQuestionCount: 20, dailyNewItemCap: 5 }, storage);
+    enqueueOutboxEntries([
+      { type: "upsert_preferences", payload: { user_id: USER_ID, daily_question_count: 20, daily_new_item_cap: 5 } },
+    ]);
+    writePersistedStore({
+      schemaVersion: 2,
+      items: [{
+        id: "item_local",
+        language: "ja",
+        type: "vocabulary",
+        promptZh: "狗",
+        answer: "犬",
+        reading: "いぬ",
+        source: "manual",
+        tags: [],
+        status: "new",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        isSeed: false,
+      }],
+      scheduleStates: [],
+      reviewAttempts: [],
+      studySessions: [],
+    });
+    const base = createFakeSupabaseClient(db);
+    let firstPreferenceRead = true;
+    const client = {
+      ...base,
+      from(table: string) {
+        if (table !== "user_preferences" || !firstPreferenceRead) return base.from(table);
+        firstPreferenceRead = false;
+        const chain = {
+          select: () => chain,
+          eq: () => chain,
+          async maybeSingle() {
+            const pending = listOutboxEntries().find((entry) => entry.type === "upsert_preferences");
+            db.tables.user_preferences.rows[0] = {
+              ...stalePreference,
+              daily_question_count: 20,
+              daily_new_item_cap: 5,
+            };
+            if (pending) removeOutboxEntry(pending.id);
+            return { data: stalePreference, error: null };
+          },
+        };
+        return chain;
+      },
+    };
+
+    const status = await runInitialMigration({
+      repository: new LocalStorageLearningRepository(),
+      supabase: client as unknown as SupabaseClient,
+      userId: USER_ID,
+    });
+
+    expect(status.phase).toBe("completed");
+    expect(readStudyQuestionCount(storage)).toBe(20);
+    expect(readDailyNewItemCap(storage)).toBe(5);
+    expect(db.tables.user_preferences.rows[0]).toMatchObject({
+      daily_question_count: 20,
+      daily_new_item_cap: 5,
+    });
   });
 });
 

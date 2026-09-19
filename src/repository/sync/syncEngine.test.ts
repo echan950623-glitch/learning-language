@@ -585,6 +585,33 @@ describe("drainOutboxFully：中斷安全／可重試", () => {
   });
 });
 
+describe("drainOutboxFully：偏好設定最後一次選擇生效", () => {
+  it("既有雲端偏好可依 FIFO 更新，最後一筆為目前設定", async () => {
+    const db = new FakeSupabaseDatabase();
+    db.tables.user_preferences.rows.push({
+      user_id: "user_1",
+      daily_question_count: 15,
+      daily_new_item_cap: 10,
+      updated_at: "2026-09-19T00:00:00.000Z",
+    });
+    const client = createFakeSupabaseClient(db);
+    enqueueOutboxEntries([
+      { type: "upsert_preferences", payload: { user_id: "user_1", daily_question_count: 10, daily_new_item_cap: 10 } },
+      { type: "upsert_preferences", payload: { user_id: "user_1", daily_question_count: 15, daily_new_item_cap: 20 } },
+    ]);
+
+    const outcome = await drainOutboxFully(asClient(client), undefined, "user_1");
+
+    expect(outcome.success).toBe(true);
+    expect(listOutboxEntries()).toHaveLength(0);
+    expect(db.tables.user_preferences.rows).toHaveLength(1);
+    expect(db.tables.user_preferences.rows[0]).toMatchObject({
+      daily_question_count: 15,
+      daily_new_item_cap: 20,
+    });
+  });
+});
+
 describe("drainOutboxFully：migration 與背景 kick() 不會同時操作同一個 outbox", () => {
   it("兩個並發呼叫序列化執行，不會互相踩到對方讀到一半的佇列", async () => {
     const db = new FakeSupabaseDatabase();

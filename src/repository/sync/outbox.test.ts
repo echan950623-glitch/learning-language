@@ -4,6 +4,7 @@ import {
   OUTBOX_STORAGE_KEY,
   OutboxPersistenceError,
   enqueueOutboxEntry,
+  enqueueLatestPreferences,
   listOutboxEntries,
 } from "./outbox";
 
@@ -43,5 +44,24 @@ describe("outbox persistence", () => {
       OutboxPersistenceError
     );
     expect(storage.getItem(OUTBOX_STORAGE_KEY)).toBeNull();
+  });
+
+  it("連續變更偏好只保留最後一次選擇，不影響其他待送操作", () => {
+    enqueueOutboxEntry({ type: "delete_items", payload: { ids: ["item-1"] } });
+    enqueueLatestPreferences({ user_id: "other-user", daily_question_count: 5, daily_new_item_cap: 5 });
+    enqueueLatestPreferences({ user_id: "user-1", daily_question_count: 10, daily_new_item_cap: 10 });
+    enqueueLatestPreferences({ user_id: "user-1", daily_question_count: 15, daily_new_item_cap: 20 });
+
+    const entries = listOutboxEntries();
+    expect(entries).toHaveLength(3);
+    expect(entries[0].type).toBe("delete_items");
+    expect(entries[1]).toMatchObject({
+      type: "upsert_preferences",
+      payload: { user_id: "other-user", daily_question_count: 5, daily_new_item_cap: 5 },
+    });
+    expect(entries[2]).toMatchObject({
+      type: "upsert_preferences",
+      payload: { daily_question_count: 15, daily_new_item_cap: 20 },
+    });
   });
 });
