@@ -160,15 +160,36 @@ async function fetchRemoteSnapshot(supabase: SupabaseClient, userId: string): Pr
   };
 }
 
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
+const TIMESTAMP_FIELDS = new Set([
+  "created_at",
+  "due_at",
+  "last_reviewed_at",
+  "reviewed_at",
+  "started_at",
+  "completed_at",
+]);
+
+function canonicalTimestamp(value: string): string {
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? `timestamp:${milliseconds}` : value;
+}
+
+function canonicalJson(value: unknown, fieldName?: string): unknown {
+  if (typeof value === "string" && fieldName && TIMESTAMP_FIELDS.has(fieldName)) {
+    return canonicalTimestamp(value);
+  }
+  if (Array.isArray(value)) return value.map((entry) => canonicalJson(entry));
   if (typeof value !== "object" || value === null) return value;
 
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, canonicalJson(entry)])
+      .map(([key, entry]) => [key, canonicalJson(entry, key)])
   );
+}
+
+function sameTimestamp(left: string, right: string): boolean {
+  return canonicalTimestamp(left) === canonicalTimestamp(right);
 }
 
 /** JSONB 不保留物件鍵順序；陣列順序仍有語意，物件鍵順序則沒有。 */
@@ -188,7 +209,7 @@ function checkItems(local: PersistedStore["items"], remote: LearningItemRow[], u
     if (scalarKeys.some((key) => row[key] !== expected[key])) return true;
     if (!expected.tags.every((tag) => row.tags.includes(tag))) return true;
     // 沒有別名代表這筆是以原始 ID 新增，created_at 也必須一致；別名則保留 canonical 紀錄原始建立時間。
-    return canonicalId === item.id && row.created_at !== expected.created_at;
+    return canonicalId === item.id && !sameTimestamp(row.created_at, expected.created_at);
   }).map((item) => item.id);
   return {
     key: "items",

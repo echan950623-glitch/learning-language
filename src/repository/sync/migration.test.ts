@@ -44,6 +44,16 @@ describe("migration JSONB comparison", () => {
     ).toBe(true);
     expect(sameJson([{ id: "a" }, { id: "b" }], [{ id: "b" }, { id: "a" }])).toBe(false);
   });
+
+  it("把 Z 與等價的 UTC offset 時間視為同一瞬間，仍拒絕真正不同的時間", () => {
+    expect(
+      sameJson(
+        { due_at: "2026-09-20T00:00:00.000Z", last_reviewed_at: "2026-09-19T08:00:00.000Z" },
+        { last_reviewed_at: "2026-09-19T16:00:00+08:00", due_at: "2026-09-20T00:00:00+00:00" }
+      )
+    ).toBe(true);
+    expect(sameJson({ reviewed_at: "2026-09-19T08:00:00Z" }, { reviewed_at: "2026-09-19T08:00:01Z" })).toBe(false);
+  });
 });
 
 describe("runInitialMigration：跨裝置重複單字＋雙方已有作答", () => {
