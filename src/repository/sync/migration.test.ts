@@ -11,6 +11,7 @@ import {
   __verifyMigrationForTests,
   isMigrationCompleted,
   runInitialMigration,
+  sameJson,
 } from "./migration";
 import { createFakeSupabaseClient, FakeSupabaseDatabase, type FakeSupabaseClient } from "./testSupabaseFake";
 
@@ -31,6 +32,18 @@ beforeEach(() => {
   __clearOutboxForTests();
   __resetSyncEngineForTests();
   __resetMigrationForTests();
+});
+
+describe("migration JSONB comparison", () => {
+  it("忽略 JSON 物件鍵順序，但保留陣列順序語意", () => {
+    expect(
+      sameJson(
+        [{ learningItemId: "item-1", ability: "recall", kind: "review" }],
+        [{ ability: "recall", kind: "review", learningItemId: "item-1" }]
+      )
+    ).toBe(true);
+    expect(sameJson([{ id: "a" }, { id: "b" }], [{ id: "b" }, { id: "a" }])).toBe(false);
+  });
 });
 
 describe("runInitialMigration：跨裝置重複單字＋雙方已有作答", () => {

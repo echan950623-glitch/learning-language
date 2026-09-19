@@ -160,8 +160,20 @@ async function fetchRemoteSnapshot(supabase: SupabaseClient, userId: string): Pr
   };
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (typeof value !== "object" || value === null) return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalJson(entry)])
+  );
+}
+
+/** JSONB 不保留物件鍵順序；陣列順序仍有語意，物件鍵順序則沒有。 */
+export function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
 }
 
 function checkItems(local: PersistedStore["items"], remote: LearningItemRow[], userId: string): MigrationCategoryResult {
