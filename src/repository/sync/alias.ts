@@ -48,7 +48,9 @@ export interface AttemptAlias {
   createdAt: string;
 }
 
-export type ConflictReason = "fields_incompatible" | "remote_has_progress";
+// remote_has_progress 保留給已寫入舊版 journal 的衝突紀錄；新版只有雙邊都有進度才使用
+// both_sides_have_progress 停止自動合併。
+export type ConflictReason = "fields_incompatible" | "remote_has_progress" | "both_sides_have_progress";
 
 export interface UnresolvedItemConflict {
   id: string;

@@ -214,6 +214,57 @@ describe("drainOutboxFully：content-key 衝突 remap", () => {
     expect(db.tables.learning_items.rows.map((r) => r.id).sort()).toEqual(["unrelated", "winner"]);
   });
 
+  it("本機只是無進度的新副本、雲端已有進度時，安全建立 alias 並保留雲端進度", async () => {
+    const db = new FakeSupabaseDatabase();
+    db.tables.learning_items.rows.push({
+      ...itemRow({ id: "winner", status: "learning", is_seed: true }),
+      content_key: "ja|vocabulary|狗|犬|いぬ",
+    });
+    db.tables.schedule_states.rows.push({
+      user_id: "user_1",
+      learning_item_id: "winner",
+      ability: "recall",
+      language: "ja",
+      due_at: "2026-02-01T00:00:00.000Z",
+      interval_days: 30,
+      streak: 10,
+      lapse_count: 0,
+      last_reviewed_at: "2026-01-25T00:00:00.000Z",
+    });
+    const client = createFakeSupabaseClient(db);
+    writePersistedStore({
+      schemaVersion: 2,
+      items: [{
+        id: "loser",
+        language: "ja",
+        type: "vocabulary",
+        promptZh: "狗",
+        answer: "犬",
+        reading: "いぬ",
+        source: "manual",
+        tags: [],
+        status: "new",
+        createdAt: "2026-01-30T00:00:00.000Z",
+        isSeed: true,
+      }],
+      scheduleStates: [],
+      reviewAttempts: [],
+      studySessions: [],
+    });
+    enqueueOutboxEntries([{ type: "upsert_item", payload: itemRow({ id: "loser", is_seed: true }) }]);
+
+    const outcome = await drainOutboxFully(asClient(client), undefined, "user_1");
+
+    expect(outcome.success).toBe(true);
+    expect(listOutboxEntries()).toHaveLength(0);
+    expect(loadAliasStore("user_1").items).toContainEqual(
+      expect.objectContaining({ localId: "loser", canonicalId: "winner" })
+    );
+    expect(db.tables.learning_items.rows).toHaveLength(1);
+    expect(db.tables.schedule_states.rows).toHaveLength(1);
+    expect(db.tables.schedule_states.rows[0]).toMatchObject({ learning_item_id: "winner", streak: 10 });
+  });
+
   it("遠端排程比較新：不被本機比較舊的排程覆蓋", async () => {
     const db = new FakeSupabaseDatabase();
     db.tables.learning_items.rows.push({ ...itemRow({ id: "winner" }), content_key: "ja|vocabulary|狗|犬|いぬ" });

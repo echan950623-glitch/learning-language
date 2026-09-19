@@ -17,9 +17,9 @@
  *
  * 新規則（`decideContentKeyConflict`）：
  * - 只有「本機與遠端的欄位完全相容（沒有兩邊都非空但不同的說明／羅馬拼音／詞性／例句／
- *   狀態）」**且**「遠端這個 canonical 項目目前完全沒有排程／作答／session 引用」時，
- *   才自動建立別名（`auto_alias`）——這種情況下遠端還沒有任何獨立進度可能被覆蓋，翻譯
- *   本機這台裝置的後續操作到 canonical id 是可證明無損的。
+ *   狀態）」**且**「不是兩邊都各自有排程／作答／session 引用」時，才自動建立別名
+ *   （`auto_alias`）。若只有一邊有進度，另一邊只是同內容、不同隨機 ID 的全新副本，把空白
+ *   那邊對應到有進度的 canonical id 不會覆蓋或丟棄任何學習紀錄。
  * - 其餘情況一律回傳 `unresolved_conflict`：不猜測合併，也不自動選邊，由呼叫端把完整的
  *   雙邊快照存成一筆持久化的「未解決衝突」記錄（`alias.ts` 的 `recordUnresolvedItemConflict`），
  *   並讓這筆 `upsert_item` 留在 outbox 最前面（不移除、不 remap）——後面所有操作因此自然
@@ -109,7 +109,7 @@ export function checkItemFieldsCompatible(remote: LearningItemRow, local: Learni
 }
 
 // ---------------------------------------------------------------------------
-// 最終決策：欄位相容 AND 遠端 canonical 項目沒有任何排程／作答／session 引用，才自動建立別名。
+// 最終決策：欄位相容，而且不是雙邊都各自有進度，才自動建立別名。
 // ---------------------------------------------------------------------------
 
 export type ConflictDecision =
@@ -118,6 +118,7 @@ export type ConflictDecision =
 
 export function decideContentKeyConflict(params: {
   fieldCompatibility: FieldCompatibility;
+  localHasProgress: boolean;
   remoteHasProgress: boolean;
 }): ConflictDecision {
   if (!params.fieldCompatibility.compatible) {
@@ -127,11 +128,11 @@ export function decideContentKeyConflict(params: {
       detail: `這個單字的欄位內容跟雲端已有的版本不相容（${params.fieldCompatibility.conflictingFields.join("、")}），無法自動合併，需要人工確認。`,
     };
   }
-  if (params.remoteHasProgress) {
+  if (params.localHasProgress && params.remoteHasProgress) {
     return {
       kind: "unresolved_conflict",
-      reason: "remote_has_progress",
-      detail: "雲端這個單字已經有排程或作答紀錄，可能是另一台裝置獨立累積的學習進度；在伺服器端有保護機制證明合併不會蓋掉任何一邊之前，暫不自動合併。",
+      reason: "both_sides_have_progress",
+      detail: "本機與雲端的同內容單字都各自有排程、作答或 session 引用；在能證明合併不會蓋掉任何一邊之前，暫不自動合併。",
     };
   }
   return { kind: "auto_alias" };

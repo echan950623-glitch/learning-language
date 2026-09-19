@@ -251,10 +251,57 @@ async function remoteItemHasProgress(supabase: SupabaseClient, userId: string, l
 }
 
 /**
+ * 判斷衝突的本機 item 是否真的已有獨立進度。除了持久化 store，也檢查尚在 outbox 的後續
+ * 操作；否則「先 upsert item、後面才是 schedule/attempt」的 migration 會被誤判成空白副本。
+ */
+function localItemHasProgress(learningItemId: string): boolean {
+  const store = readPersistedStore();
+  const item = store.items.find((candidate) => candidate.id === learningItemId);
+  if (item?.status !== undefined && item.status !== "new") return true;
+  if (store.scheduleStates.some((schedule) => schedule.learningItemId === learningItemId)) return true;
+  if (store.reviewAttempts.some((attempt) => attempt.learningItemId === learningItemId)) return true;
+  if (
+    store.studySessions.some(
+      (session) =>
+        session.plannedUnits.some((unit) => unit.learningItemId === learningItemId) ||
+        session.exerciseResults.some((result) => result.learningItemId === learningItemId) ||
+        session.newItemIds.includes(learningItemId) ||
+        session.reviewItemIds.includes(learningItemId)
+    )
+  ) {
+    return true;
+  }
+
+  return listOutboxEntries().some((entry) => {
+    switch (entry.type) {
+      case "upsert_schedule_state":
+      case "upsert_review_attempt":
+      case "record_graded_attempt":
+        return entry.payload.learning_item_id === learningItemId;
+      case "upsert_session":
+        return (
+          entry.payload.planned_units.some((unit) => unit.learningItemId === learningItemId) ||
+          entry.payload.new_item_ids.includes(learningItemId) ||
+          entry.payload.review_item_ids.includes(learningItemId)
+        );
+      case "mark_attempt_correct": {
+        const attempt = store.reviewAttempts.find(
+          (candidate) =>
+            candidate.sessionId === entry.payload.session_id && candidate.exerciseId === entry.payload.exercise_id
+        );
+        return attempt?.learningItemId === learningItemId;
+      }
+      default:
+        return false;
+    }
+  });
+}
+
+/**
  * 偵測到 `upsert_item` 撞到 unique(user_id, content_key) 時的完整解決流程。只有雙方欄位
- * 相容且遠端沒有任何進度時，才先持久化 local→canonical alias，再移除 outbox 首筆。
+ * 相容且不是雙邊都各自有進度時，才先持久化 local→canonical alias，再移除 outbox 首筆。
  * 本機 store 與其他 outbox entry 不改 id；每次送出與 pull 時才在網路邊界翻譯。
- * 任一邊已有進度或欄位不同時，持久化完整衝突快照並保留 FIFO 首筆，不自動選邊。
+ * 雙邊都有進度或欄位不同時，持久化完整衝突快照並保留 FIFO 首筆，不自動選邊。
  */
 async function resolveContentKeyConflict(
   supabase: SupabaseClient,
@@ -285,6 +332,7 @@ async function resolveContentKeyConflict(
       (await remoteItemHasProgress(supabase, headEntry.payload.user_id, toId));
     const decision = decideContentKeyConflict({
       fieldCompatibility: checkItemFieldsCompatible(winner, headEntry.payload),
+      localHasProgress: localItemHasProgress(fromId),
       remoteHasProgress: hasProgress,
     });
     if (decision.kind === "unresolved_conflict") {
