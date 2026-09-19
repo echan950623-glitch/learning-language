@@ -44,14 +44,17 @@ import {
   type MarkAttemptCorrectRpcInput,
   type OutboxOperation,
   type RecordGradedAttemptRpcInput,
+  type ExpectedScheduleState,
 } from "./sync/outbox";
 import { kick } from "./sync/syncEngine";
 
 function buildRecordGradedAttemptPayload(
   input: RecordGradedAttemptInput,
-  result: RecordGradedAttemptResult
+  result: RecordGradedAttemptResult,
+  expectedSchedule: ExpectedScheduleState | null
 ): RecordGradedAttemptRpcInput {
   return {
+    attempt_id: result.attempt.id,
     session_id: input.sessionId,
     learning_item_id: input.learningItemId,
     ability: input.ability,
@@ -61,6 +64,7 @@ function buildRecordGradedAttemptPayload(
     used_hint: input.usedHint,
     response_time_ms: input.responseTimeMs,
     reviewed_at: result.attempt.reviewedAt,
+    expected_schedule: expectedSchedule,
     schedule: {
       due_at: result.schedule.dueAt,
       interval_days: result.schedule.intervalDays,
@@ -75,11 +79,13 @@ function buildRecordGradedAttemptPayload(
 
 function buildMarkAttemptCorrectPayload(
   input: MarkAttemptCorrectInput,
-  result: RecordGradedAttemptResult
+  result: RecordGradedAttemptResult,
+  expectedSchedule: ExpectedScheduleState
 ): MarkAttemptCorrectRpcInput {
   return {
     session_id: input.sessionId,
     exercise_id: input.exerciseId,
+    expected_schedule: expectedSchedule,
     schedule: {
       due_at: result.schedule.dueAt,
       interval_days: result.schedule.intervalDays,
@@ -87,6 +93,17 @@ function buildMarkAttemptCorrectPayload(
       lapse_count: result.schedule.lapseCount,
     },
     item_status: result.itemStatus,
+  };
+}
+
+function scheduleExpectation(schedule: ScheduleState | undefined): ExpectedScheduleState | null {
+  if (!schedule) return null;
+  return {
+    due_at: schedule.dueAt,
+    interval_days: schedule.intervalDays,
+    streak: schedule.streak,
+    lapse_count: schedule.lapseCount,
+    last_reviewed_at: schedule.lastReviewedAt ?? null,
   };
 }
 
@@ -193,19 +210,32 @@ export class SyncingLearningRepository implements LearningRepository {
   }
 
   recordGradedAttempt(input: RecordGradedAttemptInput): RecordGradedAttemptResult {
+    const expectedSchedule = scheduleExpectation(this.inner.getScheduleState(input.learningItemId, input.ability));
     const result = this.inner.recordGradedAttempt(input);
     this.enqueueAndKick({
       type: "record_graded_attempt",
-      payload: buildRecordGradedAttemptPayload(input, result),
+      payload: buildRecordGradedAttemptPayload(input, result, expectedSchedule),
     });
     return result;
   }
 
   markAttemptCorrect(input: MarkAttemptCorrectInput): RecordGradedAttemptResult {
+    const attempt = this.inner
+      .listReviewAttempts()
+      .find((candidate) => candidate.sessionId === input.sessionId && candidate.exerciseId === input.exerciseId);
+    if (!attempt) {
+      // inner 會產生既有的領域錯誤；這裡只避免在取得前置排程時製造不同的錯誤。
+      return this.inner.markAttemptCorrect(input);
+    }
+    const ability: AbilityKind = attempt.exerciseType === "reading" ? "reading" : "recall";
+    const expectedSchedule = scheduleExpectation(this.inner.getScheduleState(attempt.learningItemId, ability));
+    if (!expectedSchedule) {
+      return this.inner.markAttemptCorrect(input);
+    }
     const result = this.inner.markAttemptCorrect(input);
     this.enqueueAndKick({
       type: "mark_attempt_correct",
-      payload: buildMarkAttemptCorrectPayload(input, result),
+      payload: buildMarkAttemptCorrectPayload(input, result, expectedSchedule),
     });
     return result;
   }

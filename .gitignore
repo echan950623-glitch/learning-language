@@ -53,3 +53,6 @@ DEVLOG.md
 
 # local Claude worktrees and session artifacts
 .claude/
+
+# local Supabase CLI cache
+supabase/.temp/

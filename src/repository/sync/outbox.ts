@@ -6,9 +6,9 @@
  * 刻意跟 Postgres 資料表欄位一致，因為這些物件會直接當成 `.upsert()`／`.rpc()` 的參數送出，
  * 不需要在送出前再轉換一次。
  *
- * 持久化：獨立 localStorage key（跟主要的 `learning-language:store` 完全分開），
- * 有自己的輕量 sanitize——outbox 內容毀損只會讓「待送佇列」安全回退成空陣列，
- * 絕對不會連帶影響主要的 PersistedStore 讀取（兩個 key 互不干涉）。
+ * 持久化：獨立 localStorage key（跟主要的 `learning-language:store` 完全分開）。任何
+ * 讀取、解析或寫入失敗都會 fail closed；不能把未知的待送資料當成空佇列而繼續同步。
+ * 主要 PersistedStore 仍是獨立 key，因此錯誤不會刪除本機學習資料。
  */
 
 import type {
@@ -78,11 +78,7 @@ export interface StudySessionRow {
   review_item_ids: string[];
 }
 
-/**
- * `review_attempts` 直接 upsert 用（僅 migration 直接使用，一般作答流程走
- * `record_graded_attempt`／`mark_attempt_correct` RPC，不會走這個型別——RPC 由資料庫端
- * 決定 `id` 與 `seq`，這裡的 `id` 只在 migration 的直接 upsert 路徑會被使用）。
- */
+/** `review_attempts` 的 guarded migration RPC payload；一般作答走評分／修正 RPC。 */
 export interface ReviewAttemptRow {
   id: string;
   user_id: string;
@@ -105,6 +101,8 @@ export interface UserPreferencesRow {
 }
 
 export interface RecordGradedAttemptRpcInput {
+  /** 本機先建立的穩定 ID；伺服器必須使用同一個 ID，讓重送可逐欄核對。 */
+  attempt_id: string;
   session_id: string;
   learning_item_id: string;
   ability: AbilityKind;
@@ -114,6 +112,8 @@ export interface RecordGradedAttemptRpcInput {
   used_hint: boolean;
   response_time_ms: number;
   reviewed_at: string;
+  /** 作答前看到的排程；null 表示當時尚未有這個能力的排程。伺服器以此做 CAS。 */
+  expected_schedule: ExpectedScheduleState | null;
   schedule: {
     due_at: string;
     interval_days: number;
@@ -128,6 +128,8 @@ export interface RecordGradedAttemptRpcInput {
 export interface MarkAttemptCorrectRpcInput {
   session_id: string;
   exercise_id: string;
+  /** 修正前看到的排程，伺服器以此做 CAS，拒絕覆蓋其他裝置較新的進度。 */
+  expected_schedule: ExpectedScheduleState;
   schedule: {
     due_at: string;
     interval_days: number;
@@ -137,27 +139,28 @@ export interface MarkAttemptCorrectRpcInput {
   item_status: ItemStatus;
 }
 
+export interface ExpectedScheduleState {
+  due_at: string;
+  interval_days: number;
+  streak: number;
+  lapse_count: number;
+  last_reviewed_at: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Outbox 操作型別
 // ---------------------------------------------------------------------------
 
-/**
- * `upsert_review_attempt` 是 ARCHITECTURE.md 型別表沒有列出、但「一次性 migration」一節
- * 明確要求的操作（「每個 ReviewAttempt...組成等同 record_graded_attempt payload 的資料
- * **直接 upsert 進 review_attempts 表**（不透過 RPC」）：只有 migration 會用到，比照同一份
- * 文件裡 `upsert_schedule_state` 的註記（「僅 migration／初始匯入直接用」）延伸出的同一種
- * 型別，屬於依整體意圖補齊的一個型別，不是新的合約分歧。詳見交付報告。
- */
 export type OutboxOperation =
-  | { type: "upsert_item"; payload: LearningItemRow } // .upsert(row, {onConflict:'id'})
-  | { type: "delete_items"; payload: { ids: string[] } } // .delete().in('id', ids)
-  | { type: "upsert_schedule_state"; payload: ScheduleStateRow } // .upsert(row, {onConflict:'learning_item_id,ability'})（僅 migration／初始匯入直接用；一般作答流程走 record_graded_attempt RPC）
-  | { type: "upsert_session"; payload: StudySessionRow } // .upsert(row, {onConflict:'id'})（建立／恢復 in_progress）
-  | { type: "abandon_session"; payload: { sessionId: string } } // .update({status:'abandoned'}).eq('id', sessionId)
+  | { type: "upsert_item"; payload: LearningItemRow } // guarded RPC
+  | { type: "delete_items"; payload: { ids: string[] } } // guarded RPC
+  | { type: "upsert_schedule_state"; payload: ScheduleStateRow } // guarded RPC；僅 migration／初始匯入
+  | { type: "upsert_session"; payload: StudySessionRow } // guarded RPC（建立／恢復 in_progress）
+  | { type: "abandon_session"; payload: { sessionId: string } } // guarded RPC
   | { type: "record_graded_attempt"; payload: RecordGradedAttemptRpcInput } // .rpc('record_graded_attempt', {payload})
   | { type: "mark_attempt_correct"; payload: MarkAttemptCorrectRpcInput } // .rpc('mark_attempt_correct', {payload})
-  | { type: "upsert_preferences"; payload: UserPreferencesRow } // .upsert(row, {onConflict:'user_id'})
-  | { type: "upsert_review_attempt"; payload: ReviewAttemptRow }; // .upsert(row, {onConflict:'id'})（僅 migration 直接用）
+  | { type: "upsert_preferences"; payload: UserPreferencesRow } // guarded RPC
+  | { type: "upsert_review_attempt"; payload: ReviewAttemptRow }; // guarded RPC；僅 migration
 
 export type OutboxOperationType = OutboxOperation["type"];
 
@@ -337,12 +340,19 @@ export function preferencesToRow(
 // localStorage 讀寫 + 輕量 sanitize
 // ---------------------------------------------------------------------------
 
+export class OutboxPersistenceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "OutboxPersistenceError";
+  }
+}
+
 function browserStorage(): Storage | undefined {
   if (typeof window === "undefined") return undefined;
   try {
     return window.localStorage;
-  } catch {
-    return undefined;
+  } catch (error) {
+    throw new OutboxPersistenceError("目前無法使用本機儲存，已停止同步以保留待送資料", { cause: error });
   }
 }
 
@@ -380,8 +390,7 @@ function readOutboxEntries(): OutboxEntry[] {
   try {
     raw = storage.getItem(OUTBOX_STORAGE_KEY);
   } catch (error) {
-    console.warn("[learning-language] 讀取同步佇列失敗，改用空佇列", error);
-    return [];
+    throw new OutboxPersistenceError("讀取同步佇列失敗，已停止同步以保留待送資料", { cause: error });
   }
   if (raw === null) return [];
 
@@ -389,35 +398,32 @@ function readOutboxEntries(): OutboxEntry[] {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    console.warn("[learning-language] 同步佇列不是合法 JSON，已安全回退為空佇列", error);
-    return [];
+    throw new OutboxPersistenceError("同步佇列不是合法 JSON，已停止同步以保留待送資料", { cause: error });
   }
 
   if (!Array.isArray(parsed)) {
-    console.warn("[learning-language] 同步佇列格式不是陣列，已安全回退為空佇列");
-    return [];
+    throw new OutboxPersistenceError("同步佇列格式損毀，已停止同步以保留待送資料");
   }
 
-  const valid = parsed.filter(isOutboxEntry);
-  if (valid.length !== parsed.length) {
-    console.warn("[learning-language] 同步佇列中有格式不正確的項目，已濾除", {
-      dropped: parsed.length - valid.length,
-    });
+  if (!parsed.every(isOutboxEntry)) {
+    throw new OutboxPersistenceError("同步佇列含有格式不正確的項目，已停止同步以保留待送資料");
   }
-  return valid;
+  return parsed;
 }
 
-function writeOutboxEntries(entries: OutboxEntry[]): void {
+/** 真的執行 localStorage 寫入；瀏覽器端任何失敗都必須回報，不能假裝已 enqueue。 */
+function persistOutboxEntries(entries: OutboxEntry[]): void {
   const storage = browserStorage();
   if (!storage) return;
   try {
     storage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(entries));
   } catch (error) {
-    // outbox 寫入失敗（例如容量已滿）不能影響主要資料——這次的變更本身已經透過
-    // inner repository 成功寫入本機，只是「還沒排進待送佇列」，之後使用者的下一次操作
-    // 仍有機會重新觸發同步；這裡只記警告，不拋例外。
-    console.warn("[learning-language] 同步佇列寫入失敗，這筆變更暫時不會加入同步佇列", error);
+    throw new OutboxPersistenceError("寫入同步佇列失敗，本機資料仍保留但尚未排入雲端同步", { cause: error });
   }
+}
+
+function writeOutboxEntries(entries: OutboxEntry[]): void {
+  persistOutboxEntries(entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +465,18 @@ export function enqueueOutboxEntries(operations: OutboxOperation[]): OutboxEntry
   entries.push(...newEntries);
   writeOutboxEntries(entries);
   return newEntries;
+}
+
+/**
+ * 整批覆寫 outbox（單一次 localStorage 寫入）。目前只有 content-key 衝突的 remap 流程
+ * （syncEngine.ts 的 `resolveContentKeyConflict`）使用——需要「移除已經解決的那筆＋改寫
+ * 其餘所有引用同一個 learningItemId 的操作」在同一次寫入內完成，讓中斷／重試維持一致
+ * （半套的話，下一次 drain 到同一筆時會用同樣的輸入重新算一次，結果不變，見該函式註解）。
+ *
+ * 這一步失敗代表「衝突其實還沒解決」，呼叫端必須知道並把它當成一般失敗處理。
+ */
+export function setOutboxEntries(entries: OutboxEntry[]): void {
+  persistOutboxEntries(entries);
 }
 
 export function removeOutboxEntry(id: string): void {

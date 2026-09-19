@@ -51,6 +51,46 @@ import type {
 export const STORAGE_KEY = "learning-language:store";
 export const SCHEMA_VERSION = 2 as const;
 
+/**
+ * 純數字版本戳記，跟 `STORAGE_KEY` 分開存放，只用來偵測「這份 store 是不是已經被
+ * 別的寫入者（pull-merge、另一個 repository 實例）換掉了」，不是 schemaVersion 的一部分、
+ * 不影響 sanitizeStore 的驗證邏輯。
+ *
+ * 2026-09-19（bounded sync safety revision）新增：`BaseLearningRepository` 的每個持有者
+ * （例如 `/study` 頁掛載時抓到的那個 repository 實例）建構時會記住當下的 revision；
+ * 之後每次要 commit 寫入前，`LocalStorageLearningRepository` 會比對「現在」跟「當初記住」
+ * 的 revision 是否一致——不一致代表 localStorage 在這之間被別人（pull-merge 或另一個
+ * 實例）改寫過，這個「held instance」如果直接照舊 clone→commit，會把別人剛寫入的內容
+ * 整個蓋掉（見 ARCHITECTURE.md「held repository instance」一節）。偵測到不一致時一律
+ * 拒絕這次 commit（丟 `PersistenceFailedError("stale_snapshot", …)`），不嘗試自動合併，
+ * 呼叫端會看到清楚的錯誤（R4 既有的 try/catch 慣例已經涵蓋這個新錯誤種類）。
+ */
+const REVISION_KEY = `${STORAGE_KEY}:revision`;
+
+/** 讀取目前的 store revision；沒有記錄過（例如全新瀏覽器）視為 0。 */
+export function readStoreRevision(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.localStorage.getItem(REVISION_KEY);
+    if (raw === null) return 0;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 只在「主要 store 的 `setItem` 已經成功」之後呼叫——刻意不吞例外：寫入失敗（例如容量已滿）
+ * 不能讓 revision 繼續往前跳，否則會讓其他還沒失敗的持有者誤判自己是新鮮的。呼叫端
+ * （`writePersistedStore`）已經保證只有在主要寫入成功後才會呼叫這個函式。
+ */
+function bumpStoreRevision(): void {
+  if (typeof window === "undefined") return;
+  const next = readStoreRevision() + 1;
+  window.localStorage.setItem(REVISION_KEY, String(next));
+}
+
 export interface PersistedStore {
   schemaVersion: 2;
   items: LearningItem[];
@@ -61,6 +101,35 @@ export interface PersistedStore {
 
 export function createEmptyStore(): PersistedStore {
   return { schemaVersion: SCHEMA_VERSION, items: [], scheduleStates: [], reviewAttempts: [], studySessions: [] };
+}
+
+/**
+ * 直接讀取目前 localStorage 裡的 PersistedStore（經過 sanitizeStore），不透過任何
+ * `LearningRepository` 實例——`LocalStorageLearningRepository` 在建構時把 store 快取在記憶體
+ * 裡，之後另一個地方（例如 syncEngine.ts 的 pull-merge 或 remap）直接寫 localStorage 不會
+ * 反映到那個已經建立好的實例上；任何需要「讀當下實際寫進磁碟的內容」的呼叫端（pull-merge、
+ * 衝突 remap、migration 核對）都應該用這個函式，不要沿用一個可能過期的 repository 實例。
+ */
+export function readPersistedStore(): PersistedStore {
+  if (typeof window === "undefined") return createEmptyStore();
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return createEmptyStore();
+    return sanitizeStore(JSON.parse(raw)).store;
+  } catch {
+    return createEmptyStore();
+  }
+}
+
+/**
+ * 對應 `readPersistedStore`：整包覆寫（單一次 localStorage 寫入）。失敗會拋出，呼叫端負責處理。
+ * 成功後一定會 bump revision（見上方說明）——任何透過這個函式寫入的呼叫端（pull-merge、
+ * `LocalStorageLearningRepository.persistSnapshot`）都會被其他 held instance 正確偵測到。
+ */
+export function writePersistedStore(store: PersistedStore): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  bumpStoreRevision();
 }
 
 const LANGUAGES: Language[] = ["ja", "en"];

@@ -3,7 +3,12 @@
  * 只印一行 console.warn 就讓 UI 以為成功了。
  */
 
-export type PersistenceErrorKind = "quota_exceeded" | "unavailable" | "serialize_failed" | "unknown";
+export type PersistenceErrorKind =
+  | "quota_exceeded"
+  | "unavailable"
+  | "serialize_failed"
+  | "stale_snapshot"
+  | "unknown";
 
 export class PersistenceFailedError extends Error {
   readonly kind: PersistenceErrorKind;
@@ -25,6 +30,8 @@ export function describePersistenceError(error: unknown): string {
         return "目前無法使用本機儲存（可能是瀏覽器設定封鎖），這次的變更沒有保存。";
       case "serialize_failed":
         return "資料格式異常導致無法保存，這次的變更沒有保存。";
+      case "stale_snapshot":
+        return "本機資料已經被其他同步流程更新，這次的變更沒有保存，請重新整理頁面後再試一次。";
       default:
         return "本機資料寫入失敗，這次的變更沒有保存，請重試一次。";
     }

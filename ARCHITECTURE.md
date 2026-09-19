@@ -663,20 +663,44 @@ PRODUCT 要求的「單一 transaction/RPC，不能拆成多個易部分成功�
 
 ```ts
 type OutboxOperation =
-  | { type: "upsert_item"; payload: LearningItemRow }                       // .upsert(row, {onConflict:'id'})
-  | { type: "delete_items"; payload: { ids: string[] } }                    // .delete().in('id', ids)
-  | { type: "upsert_schedule_state"; payload: ScheduleStateRow }            // .upsert(row, {onConflict:'learning_item_id,ability'})（僅 migration／初始匯入直接用；一般作答流程走 record_graded_attempt RPC）
-  | { type: "upsert_session"; payload: StudySessionRow }                    // .upsert(row, {onConflict:'id'})（建立／恢復 in_progress）
-  | { type: "abandon_session"; payload: { sessionId: string } }             // .update({status:'abandoned'}).eq('id', sessionId)
+  | { type: "upsert_item"; payload: LearningItemRow }                       // guarded RPC
+  | { type: "delete_items"; payload: { ids: string[] } }                    // guarded RPC
+  | { type: "upsert_schedule_state"; payload: ScheduleStateRow }            // guarded RPC；僅 migration
+  | { type: "upsert_session"; payload: StudySessionRow }                    // guarded RPC
+  | { type: "abandon_session"; payload: { sessionId: string } }             // guarded RPC
   | { type: "record_graded_attempt"; payload: RecordGradedAttemptRpcInput } // .rpc('record_graded_attempt', {payload})
   | { type: "mark_attempt_correct"; payload: MarkAttemptCorrectRpcInput }   // .rpc('mark_attempt_correct', {payload})
-  | { type: "upsert_preferences"; payload: UserPreferencesRow };            // .upsert(row, {onConflict:'user_id'})
+  | { type: "upsert_preferences"; payload: UserPreferencesRow };            // guarded RPC
 ```
 每筆 outbox entry：`{ id: string; type: OutboxOperation["type"]; payload: object;
 createdAt: string; attempts: number; lastError?: string }`，存在獨立 localStorage key
-（例如 `learning-language:sync-outbox`），有自己的、比照 `schema.ts` 精神的輕量
-sanitize（壞掉的 outbox 內容安全回退成空陣列，絕對不能讓 outbox 損毀連帶讓主要
-`PersistedStore` 也讀不出來——兩個 key 完全獨立）。
+（例如 `learning-language:sync-outbox`），與主要 `PersistedStore` 分開。outbox 讀取、解析或
+寫入失敗會 fail closed 並保留原內容，不會過濾失敗項目、回退成空佇列或假裝已 enqueue。
+另有 `upsert_review_attempt`（僅 migration 使用 guarded RPC）見下方 migration 一節。
+
+### content-key 衝突與 canonical id alias（2026-09-19，見 `duplicateItemResolution.ts`）
+
+`learning_items` 除了 `id` 主鍵，還有 `unique(user_id, content_key)`（見「資料表」一節）。
+兩台裝置各自離線建立同一個單字時 id 不同、content_key 相同：先同步的裝置成功；另一台的
+guarded insert 會撞 `unique(user_id, content_key)`。outbox 是嚴格 FIFO，必須先安全解析這筆，
+不能跳過後續操作。
+
+`resolveContentKeyConflict` 會讀遠端同 content_key 的 canonical item，並確認雙方 item 欄位
+相容，而且遠端 canonical id 尚未被 schedule、attempt 或 session 引用。只有這個無進度案例
+才把 `localId → canonicalId` 寫入帳號範圍的 append-only alias journal。local store 與既有
+outbox 永遠保留原 id；送出網路前才把 item、schedule、attempt、session 巢狀引用轉成
+canonical id，pull 回來時再轉成本機 id。journal 或 cache 任何讀寫／格式錯誤都會停止同步。
+
+若雙方任一欄位不相容，或任一邊已經有進度，系統會把雙邊完整快照寫成持久化 unresolved
+conflict，保留 outbox 首筆並停止 FIFO，不自動選較新排程、不刪任何一邊。alias journal 已寫入
+但分頁中斷時，重試會從 journal 重建同一個一對一 mapping；已 alias 的重送仍會重新核對遠端
+canonical item，不會把不同資料當成成功。
+
+所有初始匯入寫入走 `*_guarded` RPC：既有列只有逐欄完全一致才視為冪等重送，差異一律保留
+在 outbox。日常 `record_graded_attempt`／`mark_attempt_correct` 以同一 item＋ability 的
+transaction advisory lock 序列化，並用呼叫端作答前看到的 `expected_schedule` 做 CAS；第二台
+裝置若看到過期排程會收到 conflict，不會覆蓋第一台的新進度。作答使用本機穩定 attempt id，
+相同 payload 重送可安全回傳，相同 session/exercise 的不同內容則拒絕。
 
 ## 一次性 migration（localStorage v2 → Supabase）＝ 重用 outbox，不要另寫一套
 
@@ -687,29 +711,27 @@ sanitize（壞掉的 outbox 內容安全回退成空陣列，絕對不能讓 out
    `learning-language:store:pre-migration-backup:<timestamp>`（只新增、不覆蓋、
    永不自動刪除）。
 3. **推送＝批次 enqueue**：依序把每個 `LearningItem` → `upsert_item`、每個
-   `ScheduleState` → `upsert_schedule_state`、每個 `StudySession` → `upsert_session`、
-   每個 `ReviewAttempt` → 需要先算出 `sequence_in_session`（遍歷該 attempt 所屬
-   session 的 `exerciseResults`，用 `exerciseId` 找到它在陣列中的 index）再組成等同
-   `record_graded_attempt` payload 的資料**直接 upsert 進 `review_attempts` 表**
-   （不透過 RPC——migration 是把已經發生的歷史寫進去，不是即時評分，不需要 RPC
-   的「這是不是下一題」即時性檢查；但仍要保留同一個 session 內 attempts 依
-   `exerciseResults` 陣列原始順序**依序、單一 multi-row insert 或依序個別 insert**
-   寫入，讓 `seq`（identity 欄位）保留正確的相對插入順序，這是之後
-   `mark_attempt_correct` 判斷「有沒有更新作答」正確性的前提）、每個
-   `UserPreferences` → `upsert_preferences`。全部進同一個 outbox，然後
-   **await 完整 drain**（不是 fire-and-forget），過程中更新畫面進度
-   （已同步筆數／總筆數）。
-4. **核對**：drain 完成後，`select count(*)` 各表（`user_id=auth.uid()`）跟本機
-   對應集合的長度比較；全部 `>=` 本機數字才算成功（`>=` 而不是 `=`，因為可能是
-   重試、遠端已經有更多、或先前部分匯入過）。
+   `StudySession` → `upsert_session`、每個 `ReviewAttempt` → `upsert_review_attempt`、每個
+   `ScheduleState` → `upsert_schedule_state`、最後 `UserPreferences`。ReviewAttempt
+   需要先算出 `sequence_in_session`（遍歷該 attempt 所屬 session 的
+   `exerciseResults`，用 `exerciseId` 找到原始 index）。這些操作全部走 guarded RPC，
+   遠端已有不同內容時停止，不會以 upsert 覆蓋。全部進同一個 outbox，然後
+   **await 完整 drain**（不是 fire-and-forget），過程中更新畫面進度。
+4. **核對**：drain 完成後，以步驟 2 同一份 immutable manifest 為準，套用持久化 alias 後
+   跟遠端對應資料逐筆核對——
+   items 檢查每個本機 id 遠端是否存在；scheduleStates 檢查每個
+   `(learningItemId, ability)`；reviewAttempts 額外核對 `learning_item_id`／
+   `session_id` 是否跟本機一致（不是只看 id 存在）；studySessions 額外核對
+   `plannedUnits` 引用的每個 `learningItemId` 是否都是遠端真的存在的項目。單純比
+   `remoteCount >= localCount` 沒辦法抓到「筆數對但關聯錯」；
+   preferences 沒有本機筆數概念，遠端存在一筆就算通過。
 5. **標記完成＋顯示結果**：全部核對通過才寫入
    `migration-completed:<user_id>=true`，畫面顯示各類別筆數；任何一類不足，
    顯示「哪幾類尚未完成」並保留重試按鈕（重試永遠安全，見下）。
 6. **絕不刪除本機資料**——成功後本機 store 繼續當作快取正常運作，不做任何清空。
-7. **處理部分匯入**：因為每一步都是 `upsert`／`on conflict`，重新整批 enqueue＋drain
-   在任何時候重跑都是安全的（已經同步過的列變成無用功的 no-op，不會重複或報錯），
-   这就是「可重試且 idempotent」與「能處理已部分匯入」的完整答案，不需要另外設計
-   「從哪裡繼續」的邏輯。
+7. **處理部分匯入**：guarded RPC 只接受完全相同的既有列，已完成的項目是 no-op；不同內容
+   保留在 FIFO 與 conflict journal 等人工處理。migration 與背景 `kick()` 共用單一 promise
+   chain，同一時間只有一輪 drain，避免兩個流程同時移除或重送同一筆。
 
 ## MCP（C 負責；四個工具全部走一般 Supabase client＋使用者的 OAuth access token，
 RLS 自然生效，不使用 service role）

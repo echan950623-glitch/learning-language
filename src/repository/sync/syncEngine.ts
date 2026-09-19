@@ -20,10 +20,9 @@
 import type { AbilityKind, LearningItem, ReviewAttempt, ScheduleState, StudySession } from "../../domain/types";
 import { nowIso } from "../../domain/time";
 import {
-  createEmptyStore,
-  sanitizeStore,
+  readPersistedStore,
+  writePersistedStore,
   SCHEMA_VERSION,
-  STORAGE_KEY,
   type PersistedStore,
 } from "../schema";
 import {
@@ -37,26 +36,34 @@ import {
   rowToReviewAttempt,
   rowToScheduleState,
   rowToStudySessionShell,
+  setOutboxEntries,
   type LearningItemRow,
   type OutboxEntry,
   type ReviewAttemptRow,
   type ScheduleStateRow,
   type StudySessionRow,
 } from "./outbox";
+import {
+  checkItemFieldsCompatible,
+  decideContentKeyConflict,
+  isContentKeyConflict,
+  mergeLearningItemPatch,
+} from "./duplicateItemResolution";
+import {
+  commitItemAlias,
+  loadAliasStore,
+  recordUnresolvedItemConflict,
+  translateIncomingAttempt,
+  translateIncomingItem,
+  translateIncomingSchedule,
+  translateIncomingSession,
+  translateOutgoingOperation,
+} from "./alias";
 
 // supabase-js 的型別（Database 預設是 any），只用來標註「這是一個真正的 Supabase client」，
 // 不依賴任何尚未產生的 generated types。測試時傳入結構相容的假 client 並用
 // `as unknown as SupabaseClient` 轉型即可，見 syncEngine.test.ts。
 import type { SupabaseClient } from "@supabase/supabase-js";
-
-function browserStorage(): Storage | undefined {
-  if (typeof window === "undefined") return undefined;
-  try {
-    return window.localStorage;
-  } catch {
-    return undefined;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // 同步狀態（idle/syncing/error/offline + pending count），供 UI 訂閱
@@ -132,30 +139,56 @@ function classifyError(error: unknown): { kind: "offline" | "auth" | "error"; me
 // ---------------------------------------------------------------------------
 
 interface SupabaseCallResult {
-  error: { message: string } | null;
+  error: { message: string; code?: string | null; details?: string | null } | null;
   status: number;
 }
 
+let transientDrainUserId: string | null = null;
+
 async function runSupabaseCall(supabase: SupabaseClient, entry: OutboxEntry): Promise<SupabaseCallResult> {
-  switch (entry.type) {
+  const aliasUserId = activeConfig?.userId ?? transientDrainUserId;
+  const aliases = aliasUserId ? loadAliasStore(aliasUserId) : null;
+  if (aliases && entry.type === "upsert_item") {
+    const canonicalId = aliases.items.find((alias) => alias.localId === entry.payload.id)?.canonicalId;
+    if (canonicalId) {
+      // migration 重試可能再次 enqueue 原始本機 item。journal 已證明這個 ID 有 canonical
+      // 對應，但仍要重新讀取並核對內容，不能因為有 alias 就盲目丟掉這筆操作。
+      const winner = await fetchRemoteItemByContentKey(supabase, entry.payload);
+      if (!winner || winner.id !== canonicalId) {
+        return { error: { message: "sync_conflict:aliased_item_missing" }, status: 409 };
+      }
+      const compatibility = checkItemFieldsCompatible(winner, entry.payload);
+      if (!compatibility.compatible) {
+        return { error: { message: "sync_conflict:aliased_item_changed" }, status: 409 };
+      }
+      const patch = mergeLearningItemPatch(winner, entry.payload);
+      if (patch) {
+        const updated = await supabase.from("learning_items").update(patch).eq("id", canonicalId).eq("user_id", entry.payload.user_id);
+        if (updated.error) return updated;
+      }
+      return { error: null, status: 200 };
+    }
+  }
+  const operation = aliases ? translateOutgoingOperation(entry, aliases) : entry;
+  switch (operation.type) {
     case "upsert_item":
-      return supabase.from("learning_items").upsert(entry.payload, { onConflict: "id" });
+      return supabase.rpc("upsert_learning_item_guarded", { payload: operation.payload });
     case "delete_items":
-      return supabase.from("learning_items").delete().in("id", entry.payload.ids);
+      return supabase.rpc("delete_learning_items_guarded", { payload: operation.payload });
     case "upsert_schedule_state":
-      return supabase.from("schedule_states").upsert(entry.payload, { onConflict: "learning_item_id,ability" });
+      return supabase.rpc("upsert_schedule_state_guarded", { payload: operation.payload });
     case "upsert_session":
-      return supabase.from("study_sessions").upsert(entry.payload, { onConflict: "id" });
+      return supabase.rpc("upsert_study_session_guarded", { payload: operation.payload });
     case "abandon_session":
-      return supabase.from("study_sessions").update({ status: "abandoned" }).eq("id", entry.payload.sessionId);
+      return supabase.rpc("abandon_study_session_guarded", { payload: operation.payload });
     case "record_graded_attempt":
-      return supabase.rpc("record_graded_attempt", { payload: entry.payload });
+      return supabase.rpc("record_graded_attempt", { payload: operation.payload });
     case "mark_attempt_correct":
-      return supabase.rpc("mark_attempt_correct", { payload: entry.payload });
+      return supabase.rpc("mark_attempt_correct", { payload: operation.payload });
     case "upsert_preferences":
-      return supabase.from("user_preferences").upsert(entry.payload, { onConflict: "user_id" });
+      return supabase.rpc("upsert_preferences_guarded", { payload: operation.payload });
     case "upsert_review_attempt":
-      return supabase.from("review_attempts").upsert(entry.payload, { onConflict: "id" });
+      return supabase.rpc("upsert_review_attempt_guarded", { payload: operation.payload });
   }
 }
 
@@ -163,6 +196,135 @@ type StepOutcome =
   | { outcome: "empty" }
   | { outcome: "advanced" }
   | { outcome: "failed"; kind: "offline" | "auth" | "error"; message: string };
+
+// ---------------------------------------------------------------------------
+// content-key 衝突解決（見 duplicateItemResolution.ts 開頭的完整背景說明）
+// ---------------------------------------------------------------------------
+
+async function fetchRemoteItemByContentKey(
+  supabase: SupabaseClient,
+  payload: LearningItemRow
+): Promise<LearningItemRow | null> {
+  let query = supabase
+    .from("learning_items")
+    .select("*")
+    .eq("user_id", payload.user_id)
+    .eq("language", payload.language)
+    .eq("type", payload.type)
+    .eq("prompt_zh", payload.prompt_zh)
+    .eq("answer", payload.answer);
+  query = payload.reading === null ? query.is("reading", null) : query.eq("reading", payload.reading);
+
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new SyncCallError(0, error.message);
+  return (data as LearningItemRow | null) ?? null;
+}
+
+async function fetchRemoteScheduleStatesForItem(
+  supabase: SupabaseClient,
+  userId: string,
+  learningItemId: string
+): Promise<ScheduleStateRow[]> {
+  const { data, error } = await supabase
+    .from("schedule_states")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("learning_item_id", learningItemId);
+  if (error) throw new SyncCallError(0, error.message);
+  return (data as ScheduleStateRow[] | null) ?? [];
+}
+
+async function remoteItemHasProgress(supabase: SupabaseClient, userId: string, learningItemId: string): Promise<boolean> {
+  const [attempts, sessions] = await Promise.all([
+    supabase.from("review_attempts").select("id").eq("user_id", userId).eq("learning_item_id", learningItemId),
+    supabase.from("study_sessions").select("planned_units,new_item_ids,review_item_ids").eq("user_id", userId),
+  ]);
+  if (attempts.error) throw new SyncCallError(attempts.status, attempts.error.message);
+  if (sessions.error) throw new SyncCallError(sessions.status, sessions.error.message);
+  if ((attempts.data ?? []).length > 0) return true;
+  return ((sessions.data ?? []) as Array<Pick<StudySessionRow, "planned_units" | "new_item_ids" | "review_item_ids">>).some(
+    (session) =>
+      session.planned_units.some((unit) => unit.learningItemId === learningItemId) ||
+      session.new_item_ids.includes(learningItemId) ||
+      session.review_item_ids.includes(learningItemId)
+  );
+}
+
+/**
+ * 偵測到 `upsert_item` 撞到 unique(user_id, content_key) 時的完整解決流程。只有雙方欄位
+ * 相容且遠端沒有任何進度時，才先持久化 local→canonical alias，再移除 outbox 首筆。
+ * 本機 store 與其他 outbox entry 不改 id；每次送出與 pull 時才在網路邊界翻譯。
+ * 任一邊已有進度或欄位不同時，持久化完整衝突快照並保留 FIFO 首筆，不自動選邊。
+ */
+async function resolveContentKeyConflict(
+  supabase: SupabaseClient,
+  headEntry: OutboxEntry & { type: "upsert_item" }
+): Promise<StepOutcome> {
+  try {
+    const winner = await fetchRemoteItemByContentKey(supabase, headEntry.payload);
+    if (!winner) {
+      // 極短暫的時間差（例如剛好另一個交易還沒完全可見）：當成一般錯誤稍後重試，
+      // 不嘗試臆測一個目前查不到的對應。
+      return {
+        outcome: "failed",
+        kind: "error",
+        message: "偵測到重複的單字，但暫時無法讀取既有項目，稍後會自動重試。",
+      };
+    }
+
+    const fromId = headEntry.payload.id;
+    const toId = winner.id;
+    if (fromId === toId) {
+      // 結構上不會發生（相同 id 會由 guarded RPC 做逐欄核對）；防禦性地拒絕自己對自己的 alias。
+      return { outcome: "failed", kind: "error", message: "同步發生非預期的重複鍵衝突。" };
+    }
+
+    const remoteSchedules = await fetchRemoteScheduleStatesForItem(supabase, headEntry.payload.user_id, toId);
+    const hasProgress =
+      remoteSchedules.length > 0 ||
+      (await remoteItemHasProgress(supabase, headEntry.payload.user_id, toId));
+    const decision = decideContentKeyConflict({
+      fieldCompatibility: checkItemFieldsCompatible(winner, headEntry.payload),
+      remoteHasProgress: hasProgress,
+    });
+    if (decision.kind === "unresolved_conflict") {
+      recordUnresolvedItemConflict(headEntry.payload.user_id, {
+        localId: fromId,
+        canonicalId: toId,
+        reason: decision.reason,
+        detail: decision.detail,
+        localSnapshot: headEntry.payload,
+        remoteSnapshot: winner,
+      });
+      const message = "同內容單字在另一台裝置已有不同資料或進度，已完整保留並停止自動合併。";
+      markOutboxEntryFailed(headEntry.id, message);
+      return { outcome: "failed", kind: "error", message };
+    }
+
+    const patch = mergeLearningItemPatch(winner, headEntry.payload);
+    if (patch) {
+      const { error: patchError } = await supabase
+        .from("learning_items")
+        .update(patch)
+        .eq("id", toId)
+        .eq("user_id", headEntry.payload.user_id);
+      if (patchError) throw new SyncCallError(0, patchError.message);
+    }
+
+    // journal 先持久化；outbox 內容及本機 store 保持原始 local id。中斷後重試會先讀到
+    // 同一筆 alias，再由網路邊界即時翻譯，不存在改寫一半的狀態。
+    commitItemAlias(headEntry.payload.user_id, fromId, toId);
+    transientDrainUserId = headEntry.payload.user_id;
+    const remaining = listOutboxEntries().filter((entry) => entry.id !== headEntry.id);
+    setOutboxEntries(remaining);
+
+    return { outcome: "advanced" };
+  } catch (error) {
+    const classified = classifyError(error);
+    markOutboxEntryFailed(headEntry.id, classified.message);
+    return { outcome: "failed", kind: classified.kind, message: classified.message };
+  }
+}
 
 async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
   const entries = listOutboxEntries();
@@ -172,6 +334,9 @@ async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
   try {
     const response = await runSupabaseCall(supabase, entry);
     if (response.error) {
+      if (entry.type === "upsert_item" && isContentKeyConflict(response.error)) {
+        return resolveContentKeyConflict(supabase, entry as OutboxEntry & { type: "upsert_item" });
+      }
       throw new SyncCallError(response.status, response.error.message);
     }
     removeOutboxEntry(entry.id);
@@ -190,20 +355,51 @@ export interface DrainOutcome {
 }
 
 /**
+ * migration（`runInitialMigration`）跟背景 `kick()` 都會呼叫 `drainOutboxFully`，兩者原本
+ * 完全獨立、沒有任何互斥——登入當下 `configureCloudSync` 觸發的背景 `kick()` 有機會跟緊接著
+ * 呼叫的 `runInitialMigration` 同時各自跑一輪 drain，兩者都在讀/寫同一個 outbox
+ * localStorage key，會互相讀到對方寫到一半的中間狀態（例如兩邊都把 entries[0] 讀成同一筆、
+ * 都嘗試送出、都各自呼叫 removeOutboxEntry）。這裡用一條共用的 promise chain 把所有
+ * `drainOutboxFully` 呼叫序列化，讓同一時間永遠只有一輪 drain 真的在跑，不需要改動任何
+ * 呼叫端的呼叫方式。
+ */
+let drainChain: Promise<unknown> = Promise.resolve();
+
+function runExclusiveDrain<T>(task: () => Promise<T>): Promise<T> {
+  const run = drainChain.then(task, task);
+  // 不論這次成功或失敗，都要讓 chain 繼續往下走，否則後面排隊的呼叫會永遠卡住；
+  // 呼叫端仍然拿得到 `run` 原始的 resolve/reject，這裡吸收的只是 chain 內部的狀態。
+  drainChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/**
  * 一路 drain 到 outbox 淨空，或遇到第一筆失敗就停止（失敗那筆連同之後的都留在佇列裡，
  * 依 FIFO 順序，下次呼叫會從同一筆重新開始，不會跳過)。migration 用這個直接 await 到底；
  * 背景 `kick()` 也是呼叫這個，差別只在誰在乎回傳值、失敗後要不要排程重試。
  */
 export async function drainOutboxFully(
   supabase: SupabaseClient,
-  onStep?: (pendingCount: number) => void
+  onStep?: (pendingCount: number) => void,
+  userId?: string
 ): Promise<DrainOutcome> {
-  for (;;) {
-    const step = await drainStep(supabase);
-    if (step.outcome === "empty") return { success: true };
-    if (step.outcome === "failed") return { success: false, kind: step.kind, message: step.message };
-    onStep?.(outboxPendingCount());
-  }
+  return runExclusiveDrain(async () => {
+    try {
+      if (userId) transientDrainUserId = userId;
+      for (;;) {
+        const step = await drainStep(supabase);
+        if (step.outcome === "empty") return { success: true };
+        if (step.outcome === "failed") return { success: false, kind: step.kind, message: step.message };
+        onStep?.(outboxPendingCount());
+      }
+    } finally {
+      // 直接 migration drain（沒有 activeConfig）只在這一輪暫存 userId；不可洩漏到下一個帳戶。
+      transientDrainUserId = null;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -318,29 +514,13 @@ export function __resetSyncEngineForTests(): void {
   retryDelayMs = INITIAL_RETRY_DELAY_MS;
   currentStatus = { enabled: false, phase: "idle", pendingCount: 0 };
   listeners.clear();
+  drainChain = Promise.resolve();
+  transientDrainUserId = null;
 }
 
 // ---------------------------------------------------------------------------
 // pull-merge：登入時／app 啟動時已登入，把遠端資料併回本機
 // ---------------------------------------------------------------------------
-
-function readCurrentLocalStore(): PersistedStore {
-  const storage = browserStorage();
-  if (!storage) return createEmptyStore();
-  try {
-    const raw = storage.getItem(STORAGE_KEY);
-    if (raw === null) return createEmptyStore();
-    return sanitizeStore(JSON.parse(raw)).store;
-  } catch {
-    return createEmptyStore();
-  }
-}
-
-function writeLocalStore(store: PersistedStore): void {
-  const storage = browserStorage();
-  if (!storage) return;
-  storage.setItem(STORAGE_KEY, JSON.stringify(store));
-}
 
 function outboxHasPendingItemChange(entries: OutboxEntry[], itemId: string): boolean {
   return entries.some((entry) => {
@@ -400,7 +580,12 @@ function outboxHasPendingAttemptCorrection(entries: OutboxEntry[], sessionId: st
 }
 
 /** 三種情況（見 ARCHITECTURE.md「資料流總覽」）：遠端獨有→加入；雙方都有＋無待送→遠端覆蓋；雙方都有＋有待送→保留本機。 */
-function mergeItems(localItems: LearningItem[], remoteRows: LearningItemRow[], pendingEntries: OutboxEntry[]): LearningItem[] {
+function mergeItems(
+  localItems: LearningItem[],
+  remoteRows: LearningItemRow[],
+  pendingEntries: OutboxEntry[],
+  aliasedLocalIds: Set<string>
+): LearningItem[] {
   const remoteById = new Map(remoteRows.map((row) => [row.id, row]));
   const result: LearningItem[] = [];
   const seen = new Set<string>();
@@ -412,7 +597,9 @@ function mergeItems(localItems: LearningItem[], remoteRows: LearningItemRow[], p
       result.push(local);
       continue;
     }
-    result.push(rowToLearningItem(remoteRow));
+    const merged = rowToLearningItem(remoteRow);
+    // canonical 項目的建立時間屬於另一台裝置；別名只統一雲端身分，不改寫本機原始紀錄時間。
+    result.push(aliasedLocalIds.has(local.id) ? { ...merged, createdAt: local.createdAt } : merged);
   }
   for (const [id, row] of remoteById) {
     if (!seen.has(id)) result.push(rowToLearningItem(row));
@@ -553,22 +740,23 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
     if (sessionsRes.error) throw new SyncCallError(sessionsRes.status, sessionsRes.error.message);
     if (attemptsRes.error) throw new SyncCallError(attemptsRes.status, attemptsRes.error.message);
 
-    const current = readCurrentLocalStore();
+    const current = readPersistedStore();
     const pendingEntries = listOutboxEntries();
-    const remoteItems = (itemsRes.data ?? []) as LearningItemRow[];
-    const remoteSchedules = (scheduleRes.data ?? []) as ScheduleStateRow[];
-    const remoteSessions = (sessionsRes.data ?? []) as StudySessionRow[];
-    const remoteAttempts = (attemptsRes.data ?? []) as ReviewAttemptRow[];
+    const aliases = loadAliasStore(userId);
+    const remoteItems = ((itemsRes.data ?? []) as LearningItemRow[]).map((row) => translateIncomingItem(row, aliases));
+    const remoteSchedules = ((scheduleRes.data ?? []) as ScheduleStateRow[]).map((row) => translateIncomingSchedule(row, aliases));
+    const remoteSessions = ((sessionsRes.data ?? []) as StudySessionRow[]).map((row) => translateIncomingSession(row, aliases));
+    const remoteAttempts = ((attemptsRes.data ?? []) as ReviewAttemptRow[]).map((row) => translateIncomingAttempt(row, aliases));
 
     const mergedStore: PersistedStore = {
       schemaVersion: SCHEMA_VERSION,
-      items: mergeItems(current.items, remoteItems, pendingEntries),
+      items: mergeItems(current.items, remoteItems, pendingEntries, new Set(aliases.items.map((alias) => alias.localId))),
       scheduleStates: mergeScheduleStates(current.scheduleStates, remoteSchedules, pendingEntries, current.reviewAttempts),
       studySessions: mergeSessions(current.studySessions, remoteSessions, remoteAttempts, pendingEntries),
       reviewAttempts: mergeReviewAttempts(current.reviewAttempts, remoteAttempts, pendingEntries),
     };
 
-    writeLocalStore(mergedStore);
+    writePersistedStore(mergedStore);
     setStatus({ enabled: true, phase: "idle", pendingCount: outboxPendingCount(), lastSyncedAt: nowIso() });
   } catch (error) {
     const classified = classifyError(error);

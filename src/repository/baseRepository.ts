@@ -22,6 +22,7 @@ import type {
   StudySessionFilter,
 } from "./types";
 import type { PersistedStore } from "./schema";
+import { PersistenceFailedError } from "./errors";
 
 /**
  * 共用的存取／變更邏輯。
@@ -32,6 +33,19 @@ import type { PersistedStore } from "./schema";
  * - 寫入失敗時 `this.store` 完全不變（不會出現「記憶體已經更新、但存檔沒成功」的分歧）。
  * - 多個欄位要一起變的操作（評分：排程＋item status＋attempt＋session）只要放在同一次
  *   clone→mutate→commit 裡，就是一次原子寫入，不會出現半套資料。
+ *
+ * 2026-09-19（bounded sync safety revision）新增「held instance 偵測」：這個 class 的
+ * 實例一旦建構完成，`this.store` 就是記憶體快照，不會自動反映之後其他寫入者（pull-merge、
+ * 另一個 repository 實例）對同一個 localStorage key 做的改動。舊版沒有任何防護——一個
+ * 「held」很久的實例（例如頁面掛載時就抓到、之後都不重新呼叫 `getRepository()`）如果在
+ * 背景同步改寫 localStorage 之後才呼叫任何會 commit 的方法，會用自己過期的 `this.store`
+ * clone 出下一版並整個蓋掉背景同步剛寫入的內容，等同「新資料被舊資料倒退覆蓋」。
+ *
+ * 修法：每個實例記住建構當下的 store revision（`detectExternalChange` 由子類別覆寫成真的
+ * 比對；`MemoryLearningRepository` 沒有共用媒介，維持預設的「永遠新鮮」)；每次 `commit`
+ * 之前先呼叫，偵測到不一致就丟 `PersistenceFailedError("stale_snapshot", …)`、完全不呼叫
+ * `persistSnapshot`——安全地拒絕這次寫入（不猜測合併），呼叫端既有的 try/catch（R4）會如實
+ * 呈現「這次沒有存到，請重試」，而不是靜默用舊資料覆蓋新資料。
  */
 export abstract class BaseLearningRepository implements LearningRepository {
   protected store: PersistedStore;
@@ -48,7 +62,22 @@ export abstract class BaseLearningRepository implements LearningRepository {
    */
   protected abstract persistSnapshot(nextStore: PersistedStore): void;
 
+  /**
+   * true 代表「共用的儲存媒介已經被別人改寫過，這個實例手上的 `this.store` 已經過期」。
+   * 預設（純記憶體、沒有共用媒介的實作）永遠回傳 false；`LocalStorageLearningRepository`
+   * 覆寫成真的比對 store revision。
+   */
+  protected detectExternalChange(): boolean {
+    return false;
+  }
+
   private commit(nextStore: PersistedStore): void {
+    if (this.detectExternalChange()) {
+      throw new PersistenceFailedError(
+        "stale_snapshot",
+        "本機資料已經被其他同步流程更新，這次的變更沒有保存，請重新整理頁面後再試一次。"
+      );
+    }
     this.persistSnapshot(nextStore);
     this.store = nextStore;
   }

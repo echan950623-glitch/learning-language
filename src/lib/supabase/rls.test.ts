@@ -93,6 +93,7 @@ interface GradedAttemptPayload {
   // 讓這個型別可以結構相容於 supabase-js `.rpc()` 期待的 `Json` 參數型別
   // （具名 interface 預設沒有 index signature，需要明講才能被當成 Json 傳入）。
   [key: string]: Json | undefined;
+  attempt_id: string;
   session_id: string;
   learning_item_id: string;
   ability: "recall" | "reading";
@@ -102,6 +103,7 @@ interface GradedAttemptPayload {
   used_hint: boolean;
   response_time_ms: number;
   reviewed_at: string;
+  expected_schedule: { due_at: string; interval_days: number; streak: number; lapse_count: number; last_reviewed_at: string | null } | null;
   schedule: { due_at: string; interval_days: number; streak: number; lapse_count: number };
   item_status: "new" | "learning" | "mastered" | "struggling";
   session_completed: boolean;
@@ -495,6 +497,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         const { item, session } = await seedSingleUnitSession(userA.id, userA.client);
 
         const payload: GradedAttemptPayload = {
+          attempt_id: testId("attempt_test"),
           session_id: session.id,
           learning_item_id: item.id,
           ability: "recall",
@@ -504,6 +507,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
           used_hint: false,
           response_time_ms: 1500,
           reviewed_at: new Date().toISOString(),
+          expected_schedule: null,
           schedule: { due_at: isoInDays(1), interval_days: 1, streak: 1, lapse_count: 0 },
           item_status: "learning",
           session_completed: true,
@@ -534,6 +538,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         const { item, session } = await seedSingleUnitSession(userA.id, userA.client);
 
         const firstPayload: GradedAttemptPayload = {
+          attempt_id: testId("attempt_test"),
           session_id: session.id,
           learning_item_id: item.id,
           ability: "recall",
@@ -543,6 +548,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
           used_hint: false,
           response_time_ms: 1200,
           reviewed_at: new Date().toISOString(),
+          expected_schedule: null,
           schedule: { due_at: isoInDays(1), interval_days: 1, streak: 1, lapse_count: 0 },
           item_status: "learning",
           session_completed: true,
@@ -552,8 +558,10 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         const first = await userA.client.rpc("record_graded_attempt", { payload: firstPayload });
         expect(first.error).toBeNull();
 
-        // 第二次送出：payload 的排程／狀態刻意跟第一次不一樣，用來證明冪等分支
-        // 「完全不理會這次送來的新值」，而不是碰巧算出一樣的結果。
+        const exactRetry = await userA.client.rpc("record_graded_attempt", { payload: firstPayload });
+        expect(exactRetry.error).toBeNull();
+
+        // 同一自然鍵但內容不同不是安全重送，必須拒絕，且不得覆蓋第一次結果。
         const retryPayload: GradedAttemptPayload = {
           ...firstPayload,
           result: "incorrect",
@@ -561,17 +569,8 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
           item_status: "mastered",
         };
         const retry = await userA.client.rpc("record_graded_attempt", { payload: retryPayload });
-        expect(retry.error).toBeNull();
-
-        const retryResult = retry.data as unknown as {
-          schedule: { streak: number };
-          item_status: string;
-          attempt: { result: string };
-        };
-        // 冪等 no-op：回傳的是第一次真正寫入的現況，不是第二次 payload 裡的新值。
-        expect(retryResult.schedule.streak).toBe(1);
-        expect(retryResult.item_status).toBe("learning");
-        expect(retryResult.attempt.result).toBe("correct");
+        expect(retry.error).not.toBeNull();
+        expect(retry.error?.message).toMatch(/sync_conflict/);
 
         const countCheck = await userA.client
           .from("review_attempts")
@@ -600,6 +599,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         expect(sessionInsert.error).toBeNull();
 
         const mismatchedPayload: GradedAttemptPayload = {
+          attempt_id: testId("attempt_test"),
           session_id: session.id,
           learning_item_id: itemWrong.id, // 故意錯：session 的下一題其實是 itemExpected
           ability: "recall",
@@ -609,6 +609,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
           used_hint: false,
           response_time_ms: 1000,
           reviewed_at: new Date().toISOString(),
+          expected_schedule: null,
           schedule: { due_at: isoInDays(1), interval_days: 1, streak: 1, lapse_count: 0 },
           item_status: "learning",
           session_completed: true,
@@ -655,7 +656,16 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
       exerciseId: string,
       result: "correct" | "partial" | "incorrect"
     ) {
+      const currentSchedule = await client
+        .from("schedule_states")
+        .select("due_at,interval_days,streak,lapse_count,last_reviewed_at")
+        .eq("learning_item_id", item.id)
+        .eq("ability", "recall")
+        .maybeSingle();
+      expect(currentSchedule.error).toBeNull();
+      const reviewedAt = new Date().toISOString();
       const payload: GradedAttemptPayload = {
+        attempt_id: testId("attempt_test"),
         session_id: session.id,
         learning_item_id: item.id,
         ability: "recall",
@@ -664,7 +674,16 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         result,
         used_hint: false,
         response_time_ms: 1000,
-        reviewed_at: new Date().toISOString(),
+        reviewed_at: reviewedAt,
+        expected_schedule: currentSchedule.data
+          ? {
+              due_at: currentSchedule.data.due_at,
+              interval_days: currentSchedule.data.interval_days,
+              streak: currentSchedule.data.streak,
+              lapse_count: currentSchedule.data.lapse_count,
+              last_reviewed_at: currentSchedule.data.last_reviewed_at,
+            }
+          : null,
         schedule: { due_at: isoInDays(1), interval_days: 1, streak: result === "correct" ? 1 : 0, lapse_count: result === "correct" ? 0 : 1 },
         item_status: result === "correct" ? "learning" : "struggling",
         session_completed: true,
@@ -673,6 +692,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
       const { error } = await client.rpc("record_graded_attempt", { payload });
       expect(error).toBeNull();
       void userId;
+      return { ...payload.schedule, last_reviewed_at: reviewedAt };
     }
 
     it(
@@ -685,12 +705,13 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         const sessionInsert = await userA.client.from("study_sessions").insert(session);
         expect(sessionInsert.error).toBeNull();
 
-        await gradeOnce(userA.id, userA.client, item, session, "mark-correct-ex-1", "incorrect");
+        const expectedSchedule = await gradeOnce(userA.id, userA.client, item, session, "mark-correct-ex-1", "incorrect");
 
         const { data, error } = await userA.client.rpc("mark_attempt_correct", {
           payload: {
             session_id: session.id,
             exercise_id: "mark-correct-ex-1",
+            expected_schedule: expectedSchedule,
             schedule: { due_at: isoInDays(1), interval_days: 1, streak: 1, lapse_count: 1 },
             item_status: "learning",
           },
@@ -718,7 +739,7 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
         ]);
         const sessionOldInsert = await userA.client.from("study_sessions").insert(sessionOld);
         expect(sessionOldInsert.error).toBeNull();
-        await gradeOnce(userA.id, userA.client, item, sessionOld, "newer-test-old", "incorrect");
+        const oldExpectedSchedule = await gradeOnce(userA.id, userA.client, item, sessionOld, "newer-test-old", "incorrect");
 
         // session 2：對「同一個字、同一個 ability」再答一次（較新的一筆，seq 更大）。
         const sessionNew = makeStudySessionRow(userA.id, [
@@ -734,13 +755,14 @@ describeWithRealDb("Supabase RLS／RPC 安全測試（真實 DB）", () => {
           payload: {
             session_id: sessionOld.id,
             exercise_id: "newer-test-old",
+            expected_schedule: oldExpectedSchedule,
             schedule: { due_at: isoInDays(1), interval_days: 1, streak: 1, lapse_count: 1 },
             item_status: "learning",
           },
         });
         expect(data).toBeNull();
         expect(error).not.toBeNull();
-        expect(error?.message).toMatch(/更新的作答紀錄|newer/);
+        expect(error?.message).toMatch(/sync_conflict|schedule_changed|更新的作答紀錄|newer/);
 
         // 確認完全沒有寫入：舊的 attempt 仍然是 incorrect。
         const verify = await userA.client

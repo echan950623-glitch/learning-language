@@ -1,7 +1,14 @@
 import { BaseLearningRepository } from "./baseRepository";
 import { PersistenceFailedError } from "./errors";
 import { buildSeedItems } from "./seed";
-import { STORAGE_KEY, createEmptyStore, sanitizeStore, type PersistedStore } from "./schema";
+import {
+  STORAGE_KEY,
+  createEmptyStore,
+  readStoreRevision,
+  sanitizeStore,
+  writePersistedStore,
+  type PersistedStore,
+} from "./schema";
 import type { RepositoryDurability } from "./types";
 
 const CORRUPT_BACKUP_KEY = `${STORAGE_KEY}:corrupt-backup`;
@@ -42,8 +49,16 @@ function tryBackupCorruptRaw(raw: string): void {
 export class LocalStorageLearningRepository extends BaseLearningRepository {
   readonly durability: RepositoryDurability = "persistent";
 
+  /** 建構當下（也就是最後一次真的讀取 localStorage 那一刻）的 store revision。 */
+  private lastKnownRevision: number;
+
   constructor() {
     super(LocalStorageLearningRepository.loadInitialStore());
+    this.lastKnownRevision = readStoreRevision();
+  }
+
+  protected detectExternalChange(): boolean {
+    return readStoreRevision() !== this.lastKnownRevision;
   }
 
   private static loadInitialStore(): PersistedStore {
@@ -82,20 +97,22 @@ export class LocalStorageLearningRepository extends BaseLearningRepository {
   }
 
   protected persistSnapshot(nextStore: PersistedStore): void {
-    let serialized: string;
     try {
-      serialized = JSON.stringify(nextStore);
-    } catch (error) {
-      throw new PersistenceFailedError("serialize_failed", `本機資料序列化失敗：${String(error)}`);
-    }
-
-    try {
-      window.localStorage.setItem(STORAGE_KEY, serialized);
+      // 透過 schema.ts 的 `writePersistedStore` 寫入（JSON.stringify 失敗會在這裡拋出），
+      // 讓「主要 store 寫入」與「revision bump」永遠是同一個函式負責，不會有兩處各自
+      // 序列化／各自決定要不要 bump revision 而不小心不一致。
+      writePersistedStore(nextStore);
     } catch (error) {
       if (isQuotaExceededError(error)) {
         throw new PersistenceFailedError("quota_exceeded", "本機儲存空間已滿，這次的變更沒有保存");
       }
+      if (error instanceof TypeError || error instanceof RangeError) {
+        throw new PersistenceFailedError("serialize_failed", `本機資料序列化失敗：${String(error)}`);
+      }
       throw new PersistenceFailedError("unknown", `本機資料寫入失敗：${String(error)}`);
     }
+    // 寫入（含 revision bump）確定成功之後才更新自己記住的 revision，這樣「這次 commit
+    // 是我自己做的」不會被下一次 detectExternalChange 誤判成外部變更。
+    this.lastKnownRevision = readStoreRevision();
   }
 }
