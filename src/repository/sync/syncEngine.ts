@@ -59,6 +59,7 @@ import {
   translateIncomingSession,
   translateOutgoingOperation,
 } from "./alias";
+import { buildSyncDiagnostics, type SyncDiagnostics } from "./diagnostics";
 
 // supabase-js 的型別（Database 預設是 any），只用來標註「這是一個真正的 Supabase client」，
 // 不依賴任何尚未產生的 generated types。測試時傳入結構相容的假 client 並用
@@ -98,6 +99,16 @@ function setStatus(next: SyncStatus): void {
 
 export function getSyncStatus(): SyncStatus {
   return currentStatus;
+}
+
+/** 唯讀診斷：outbox 首筆卡住的操作與本機排程對照；讀取失敗回傳 null，不影響同步。 */
+export function getSyncDiagnostics(): SyncDiagnostics | null {
+  try {
+    const userId = activeConfig?.userId;
+    return buildSyncDiagnostics(listOutboxEntries(), readPersistedStore(), userId ? loadAliasStore(userId) : null);
+  } catch {
+    return null;
+  }
 }
 
 export function subscribeSyncStatus(listener: SyncStatusListener): () => void {
@@ -144,6 +155,8 @@ interface SupabaseCallResult {
 }
 
 let transientDrainUserId: string | null = null;
+/** drain 途中建立過別名、尚未通知 `onAliasCommitted`。 */
+const usersPendingAliasRefresh = new Set<string>();
 
 async function runSupabaseCall(supabase: SupabaseClient, entry: OutboxEntry): Promise<SupabaseCallResult> {
   const aliasUserId = activeConfig?.userId ?? transientDrainUserId;
@@ -362,6 +375,7 @@ async function resolveContentKeyConflict(
     // journal 先持久化；outbox 內容及本機 store 保持原始 local id。中斷後重試會先讀到
     // 同一筆 alias，再由網路邊界即時翻譯，不存在改寫一半的狀態。
     commitItemAlias(headEntry.payload.user_id, fromId, toId);
+    usersPendingAliasRefresh.add(headEntry.payload.user_id);
     transientDrainUserId = headEntry.payload.user_id;
     const remaining = listOutboxEntries().filter((entry) => entry.id !== headEntry.id);
     setOutboxEntries(remaining);
@@ -457,6 +471,12 @@ export async function drainOutboxFully(
 export interface SyncEngineConfig {
   supabase: SupabaseClient;
   userId: string;
+  /**
+   * 背景 drain 期間建立了新的 local→canonical 別名時呼叫。別名只統一「送出時」的雲端身分，
+   * 本機的空白副本仍是 new、沒有雲端已有的排程；呼叫端應重新拉取並合併雲端資料，
+   * 否則使用者會在這份副本上當成新字作答，送出時 expected_schedule=null 撞上雲端既有排程。
+   */
+  onAliasCommitted?: () => void;
 }
 
 const INITIAL_RETRY_DELAY_MS = 5_000;
@@ -507,6 +527,15 @@ export function kick(): void {
     setStatus({ enabled: true, phase: "syncing", pendingCount: pending });
   }).then((result) => {
     draining = false;
+
+    if (epoch === configEpoch && usersPendingAliasRefresh.has(config.userId)) {
+      usersPendingAliasRefresh.delete(config.userId);
+      try {
+        config.onAliasCommitted?.();
+      } catch (error) {
+        console.warn("[learning-language] 別名建立後重新同步雲端資料失敗", error);
+      }
+    }
 
     if (epoch !== configEpoch) {
       // 設定已經換掉（例如登出後又立刻登入）：這次結果不再適用，但既然 draining 剛剛
@@ -564,6 +593,7 @@ export function __resetSyncEngineForTests(): void {
   listeners.clear();
   drainChain = Promise.resolve();
   transientDrainUserId = null;
+  usersPendingAliasRefresh.clear();
 }
 
 // ---------------------------------------------------------------------------

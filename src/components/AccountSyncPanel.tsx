@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
-import { getSyncStatus, subscribeSyncStatus, type SyncStatus } from "@/repository/sync/syncEngine";
+import { getSyncDiagnostics, getSyncStatus, subscribeSyncStatus, type SyncStatus } from "@/repository/sync/syncEngine";
 
 const SERVER_SNAPSHOT: SyncStatus = { enabled: false, phase: "idle", pendingCount: 0 };
 
@@ -11,6 +11,11 @@ export function AccountSyncPanel() {
   const [checked, setChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sync = useSyncExternalStore(subscribeSyncStatus, getSyncStatus, () => SERVER_SNAPSHOT);
+  // 只在有待同步項目時讀一次本機 outbox 摘要（唯讀）；狀態每次變動才重算。
+  const diagnostics = useMemo(
+    () => (sync.enabled && sync.pendingCount > 0 ? getSyncDiagnostics() : null),
+    [sync]
+  );
 
   useEffect(() => {
     let active = true;
@@ -52,6 +57,12 @@ export function AccountSyncPanel() {
               : sync.phase === "offline" ? `離線，待同步 ${sync.pendingCount} 筆；連線恢復後自動上傳。`
               : `同步需要注意：${sync.message ?? "請稍後再試"}（待同步 ${sync.pendingCount} 筆）`}
           </p>
+          {diagnostics ? (
+            <details className="text-xs text-foreground-muted">
+              <summary className="cursor-pointer">同步診斷（唯讀，可截圖回報）</summary>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-background p-2 leading-5">{JSON.stringify(diagnostics, null, 2)}</pre>
+            </details>
+          ) : null}
           <p className="text-xs leading-5 text-foreground-muted">佇列送完不代表其他裝置的舊資料已遷移。請在原本保存學習紀錄的 App 使用相同帳戶登入；若出現衝突，請保留資料並回報，不要清除或重新匯入。</p>
         </div>
       ) : (

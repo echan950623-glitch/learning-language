@@ -89,6 +89,33 @@ function createLocalOnlyRepository(): LearningRepository {
 }
 
 /**
+ * 拉取雲端資料併回本機，成功後換一份會讀到合併結果的 singleton（見 syncEngine.ts 開頭註解）。
+ * 登入當下與「背景 drain 建立了別名」後都走這條，兩者行為一致；`epoch` 讓已被換掉的設定
+ * （登出／換人）之後才 settle 的結果不會覆蓋較新的 singleton。
+ */
+function refreshFromRemote(options: CloudSyncOptions, epoch: number): void {
+  void pullAndMergeRemoteData(options.supabase, options.userId)
+    .then(() => {
+      if (epoch !== cloudSyncEpoch) return;
+      if (typeof window === "undefined" || !localStorageIsUsable()) return;
+      // 合併結果已經寫回 localStorage；重新建一份會讀到最新內容的實例並換掉 singleton 的
+      // inner，之後的 getRepository() 呼叫才看得到合併後的資料。
+      singleton = new SyncingLearningRepository(new LocalStorageLearningRepository(), options.userId);
+    })
+    .catch((error) => {
+      if (epoch !== cloudSyncEpoch) return;
+      console.warn("[learning-language] 登入後下載雲端資料失敗，暫時只使用本機資料，稍後會自動重試同步", error);
+    });
+}
+
+function engineConfig(options: CloudSyncOptions) {
+  return {
+    ...options,
+    onAliasCommitted: () => refreshFromRemote(options, cloudSyncEpoch),
+  };
+}
+
+/**
  * auth 狀態解析後（由 `AuthSyncBootstrapper` 呼叫）：
  * - `null`（登出／尚未登入）：停用背景同步。只有「先前確實是同步模式」才會把 singleton
  *   換回純本機——app 一開始就還沒登入時，`singleton` 通常還是 `null`（尚未被任何頁面的
@@ -116,7 +143,7 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
   if (options.userId === currentCloudSyncUserId && singleton instanceof SyncingLearningRepository) {
     // 同一個使用者、已經是同步模式：只刷新 syncEngine 持有的 client 參照＋踢一次背景
     // drain（涵蓋 token 剛刷新、outbox 剛好有殘留的情況），不重新包裝、不重新 pull-merge。
-    configureSyncEngine(options);
+    configureSyncEngine(engineConfig(options));
     return;
   }
   currentCloudSyncUserId = options.userId;
@@ -124,7 +151,7 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
   cloudSyncEpoch += 1;
   const epoch = cloudSyncEpoch;
 
-  configureSyncEngine(options);
+  configureSyncEngine(engineConfig(options));
 
   const reuseExistingInner = singleton instanceof LocalStorageLearningRepository ? singleton : null;
   const inner =
@@ -132,16 +159,5 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
 
   singleton = inner ? new SyncingLearningRepository(inner, options.userId) : new MemoryLearningRepository();
 
-  void pullAndMergeRemoteData(options.supabase, options.userId)
-    .then(() => {
-      if (epoch !== cloudSyncEpoch) return; // 設定已經換掉（例如登出／換人）：這次結果不再適用
-      if (typeof window === "undefined" || !localStorageIsUsable()) return;
-      // 合併結果已經寫回 localStorage；重新建一份會讀到最新內容的實例並換掉 singleton 的
-      // inner，之後的 getRepository() 呼叫才看得到合併後的資料（見 syncEngine.ts 開頭註解）。
-      singleton = new SyncingLearningRepository(new LocalStorageLearningRepository(), options.userId);
-    })
-    .catch((error) => {
-      if (epoch !== cloudSyncEpoch) return;
-      console.warn("[learning-language] 登入後下載雲端資料失敗，暫時只使用本機資料，稍後會自動重試同步", error);
-    });
+  refreshFromRemote(options, epoch);
 }
