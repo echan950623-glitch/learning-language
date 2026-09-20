@@ -37,12 +37,56 @@ export interface AttemptSubmissionSnapshot {
  * 學習頁可能在背景 pull-merge 完成前已經載入舊 session。送出前以最新 repository 快照
  * 再核對一次位置；不同就要求重新載入，不能把舊畫面的答案套到另一題或已完成的 session。
  */
-export function isAttemptSubmissionCurrent(snapshot: AttemptSubmissionSnapshot): boolean {
+/**
+ * 核對結果。失敗時一定帶著「是哪一項對不上」與具體數值——這個訊息會直接顯示在學習頁上，
+ * 讓實機上的失敗自己說明原因，不必再另外開診斷面板比對。
+ */
+export type AttemptSubmissionCheck =
+  | { current: true }
+  | { current: false; reason: AttemptSubmissionMismatch; detail: string };
+
+export type AttemptSubmissionMismatch =
+  | "session_missing"
+  | "session_not_in_progress"
+  | "index_mismatch"
+  | "unit_missing"
+  | "item_mismatch"
+  | "ability_mismatch";
+
+export function checkAttemptSubmission(snapshot: AttemptSubmissionSnapshot): AttemptSubmissionCheck {
   const { session, currentIndex, learningItemId, ability } = snapshot;
-  if (!session || session.status !== "in_progress") return false;
-  if (session.exerciseResults.length !== currentIndex) return false;
+  if (!session) {
+    return { current: false, reason: "session_missing", detail: `本機已經找不到這筆 session（畫面在第 ${currentIndex + 1} 題）` };
+  }
+  if (session.status !== "in_progress") {
+    return { current: false, reason: "session_not_in_progress", detail: `session 現在是 ${session.status}` };
+  }
+  if (session.exerciseResults.length !== currentIndex) {
+    return {
+      current: false,
+      reason: "index_mismatch",
+      detail: `畫面停在第 ${currentIndex + 1} 題，本機紀錄已經答到第 ${session.exerciseResults.length + 1} 題`,
+    };
+  }
   const expected = session.plannedUnits[currentIndex];
-  return expected?.learningItemId === learningItemId && expected.ability === ability;
+  if (!expected) {
+    return { current: false, reason: "unit_missing", detail: `本機這筆 session 只有 ${session.plannedUnits.length} 題` };
+  }
+  if (expected.learningItemId !== learningItemId) {
+    return {
+      current: false,
+      reason: "item_mismatch",
+      detail: `這一題本機記的是 ${expected.learningItemId}，畫面上是 ${learningItemId}`,
+    };
+  }
+  if (expected.ability !== ability) {
+    return { current: false, reason: "ability_mismatch", detail: `這一題本機記的是 ${expected.ability}，畫面上是 ${ability}` };
+  }
+  return { current: true };
+}
+
+export function isAttemptSubmissionCurrent(snapshot: AttemptSubmissionSnapshot): boolean {
+  return checkAttemptSubmission(snapshot).current;
 }
 
 /**

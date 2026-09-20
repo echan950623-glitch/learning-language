@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateSessionResume, initializeStudySession, isAttemptSubmissionCurrent, resolveAttemptResync } from "./sessionInit";
+import { checkAttemptSubmission, evaluateSessionResume, initializeStudySession, isAttemptSubmissionCurrent, resolveAttemptResync } from "./sessionInit";
 import { MemoryLearningRepository } from "@/repository/memoryRepository";
 import { LocalStorageLearningRepository } from "@/repository/localStorageRepository";
 import { installMockLocalStorage, type MemoryStorage } from "@/test/localStorageMock";
@@ -295,5 +295,49 @@ describe("送出被守門擋下之後的出口", () => {
   it("找不到這筆 session：回報只能重新載入", () => {
     const repository = buildRepository(1);
     expect(resolveAttemptResync(repository, "session_missing", "ja").kind).toBe("reload");
+  });
+});
+
+describe("送出核對的失敗原因", () => {
+  const session: StudySession = {
+    id: "session_1", language: "ja", status: "in_progress", startedAt: "2026-09-20T18:00:00.000Z",
+    plannedUnits: [
+      { learningItemId: "item_1", ability: "recall", kind: "new" },
+      { learningItemId: "item_2", ability: "recall", kind: "new" },
+    ],
+    exerciseResults: [
+      { exerciseId: "ex_0", learningItemId: "item_1", exerciseType: "recall", result: "correct", usedHint: false, responseTimeMs: 900 },
+    ],
+    newItemIds: ["item_1", "item_2"], reviewItemIds: [],
+  };
+
+  it("位置一致時通過", () => {
+    expect(checkAttemptSubmission({ session, currentIndex: 1, learningItemId: "item_2", ability: "recall" })).toEqual({ current: true });
+  });
+
+  it("找不到 session：指出是 session_missing", () => {
+    const result = checkAttemptSubmission({ session: undefined, currentIndex: 1, learningItemId: "item_2", ability: "recall" });
+    expect(result).toMatchObject({ current: false, reason: "session_missing" });
+  });
+
+  it("本機進度與畫面不同：指出是 index_mismatch 並帶出兩邊的題號", () => {
+    const result = checkAttemptSubmission({ session, currentIndex: 0, learningItemId: "item_1", ability: "recall" });
+    expect(result).toMatchObject({ current: false, reason: "index_mismatch" });
+    if (result.current) throw new Error("unexpected");
+    expect(result.detail).toContain("第 1 題");
+    expect(result.detail).toContain("第 2 題");
+  });
+
+  it("題目對不上：指出是 item_mismatch 並帶出兩邊的 ID", () => {
+    const result = checkAttemptSubmission({ session, currentIndex: 1, learningItemId: "item_other", ability: "recall" });
+    expect(result).toMatchObject({ current: false, reason: "item_mismatch" });
+    if (result.current) throw new Error("unexpected");
+    expect(result.detail).toContain("item_2");
+    expect(result.detail).toContain("item_other");
+  });
+
+  it("session 已結束：指出目前狀態", () => {
+    const result = checkAttemptSubmission({ session: { ...session, status: "abandoned" }, currentIndex: 1, learningItemId: "item_2", ability: "recall" });
+    expect(result).toMatchObject({ current: false, reason: "session_not_in_progress" });
   });
 });

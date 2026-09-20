@@ -291,7 +291,7 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
       throw new TypeError("network unreachable");
     });
     const { dispatch, caches } = createSandbox(fetchMock);
-    const shellCache = await caches.open("learning-language-shell-v16");
+    const shellCache = await caches.open("learning-language-shell-v17");
     await shellCache.put("/", ok("<html>cached shell</html>"));
 
     const event = makeEvent(
@@ -379,7 +379,7 @@ describe("sw.js／同源靜態資源：白名單快取", () => {
     const { dispatch, caches } = createSandbox(fetchMock);
     const url = `${ORIGIN}/manifest.webmanifest`;
     const headers = new Headers({ Authorization: "Bearer secret-token" });
-    await (await caches.open("learning-language-shell-v16")).put(url, ok("shared cached body"));
+    await (await caches.open("learning-language-shell-v17")).put(url, ok("shared cached body"));
     const event = makeEvent(makeRequest({ url, headers }));
 
     dispatch("fetch", event);
@@ -406,7 +406,7 @@ describe("sw.js／同源靜態資源：白名單快取", () => {
       throw new TypeError("network unreachable");
     });
     const { dispatch, caches } = createSandbox(fetchMock);
-    const cache = await caches.open("learning-language-shell-v16");
+    const cache = await caches.open("learning-language-shell-v17");
     await cache.put(url, ok("cached icon"));
 
     const event = makeEvent(makeRequest({ url, destination: "image" }));
@@ -424,7 +424,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
     const { dispatch, caches, sandbox } = createSandbox(fetchMock);
 
     await (await caches.open("learning-language-shell-v12")).put("/", ok("old"));
-    await (await caches.open("learning-language-shell-v16")).put("/", ok("current"));
+    await (await caches.open("learning-language-shell-v17")).put("/", ok("current"));
     await (await caches.open("some-unrelated-app-cache")).put("/x", ok("unrelated"));
 
     const event = makeEvent();
@@ -432,7 +432,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
     await event.waitUntilPromise;
 
     const remaining = await caches.keys();
-    expect(remaining).toContain("learning-language-shell-v16");
+    expect(remaining).toContain("learning-language-shell-v17");
     expect(remaining).toContain("some-unrelated-app-cache");
     expect(remaining).not.toContain("learning-language-shell-v12");
     expect(sandbox.clientsClaimed).toBe(true);
@@ -440,7 +440,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
 });
 
 describe("sw.js／install：只預先快取可公開的靜態檔", () => {
-  it("預先快取 manifest 到 v16，不在 install 階段快取可能帶 session 的 /", async () => {
+  it("預先快取 manifest 到 v17，不在 install 階段快取可能帶 session 的 /", async () => {
     const fetchMock = vi.fn<FetchImpl>(async (input) => ok(`body:${keyOf(input)}`));
     const { dispatch, caches, sandbox } = createSandbox(fetchMock);
 
@@ -448,7 +448,7 @@ describe("sw.js／install：只預先快取可公開的靜態檔", () => {
     dispatch("install", event);
     await event.waitUntilPromise;
 
-    expect(await caches.keys()).toContain("learning-language-shell-v16");
+    expect(await caches.keys()).toContain("learning-language-shell-v17");
     expect(await findCachedEntry(caches, "/")).toBeUndefined();
     expect(await findCachedEntry(caches, "/manifest.webmanifest")).toBeDefined();
     expect(sandbox.skipWaitingCalled).toBe(true);

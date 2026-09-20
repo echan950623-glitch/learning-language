@@ -21,7 +21,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Badge } from "@/components/Badge";
 import { abilityDisplayLabel } from "@/lib/labels";
 import { readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
-import { initializeStudySession, isAttemptSubmissionCurrent, resolveAttemptResync } from "./sessionInit";
+import { checkAttemptSubmission, initializeStudySession, resolveAttemptResync } from "./sessionInit";
 
 type Phase = "loading" | "empty" | "active" | "summary" | "error";
 /** 一題的作答子狀態：answering＝還沒送出；graded＝已自動評分，等待使用者按下一題。 */
@@ -36,6 +36,15 @@ function buildHint(expectedAnswer: string): string {
   const chars = Array.from(expectedAnswer);
   if (chars.length <= 1) return expectedAnswer;
   return `${chars[0]}…（共 ${chars.length} 字）`;
+}
+
+/** 只給錯誤訊息用的唯讀計數：同語言同時有幾筆進行中的 session。 */
+function countInProgress(repository: ReturnType<typeof getRepository>): number {
+  try {
+    return repository.listStudySessions({ language: "ja", status: "all" }).filter((s) => s.status === "in_progress").length;
+  } catch {
+    return -1;
+  }
 }
 
 export default function StudyPage() {
@@ -143,10 +152,14 @@ export default function StudyPage() {
     const latestSession = repository
       .listStudySessions({ language: "ja", status: "all" })
       .find((candidate) => candidate.id === sessionId);
-    if (!isAttemptSubmissionCurrent({ session: latestSession, currentIndex, learningItemId: item.id, ability: unit.ability })) {
+    const check = checkAttemptSubmission({ session: latestSession, currentIndex, learningItemId: item.id, ability: unit.ability });
+    if (!check.current) {
       // 守門擋下這次送出是對的（位置已經不一樣了），但不能停在死路——直接把畫面對齊到
       // 這筆 session 現在真正的位置，使用者就地重答即可，不必重新載入、也不會再多開一個
       // session；真的沒辦法接續時才退回重新載入。
+      // 失敗原因直接寫進畫面上的訊息：實機一直重現不出來時，這一行就是唯一能指出
+      // 「到底是哪一項對不上」的證據，不必另外開診斷面板。
+      const why = `［${check.reason}：${check.detail}；in_progress ${countInProgress(repository)} 筆］`;
       const resync = resolveAttemptResync(repository, sessionId, "ja");
       if (resync.kind === "realign") {
         setItemsById(new Map(repository.listItems({ language: "ja" }).map((entry) => [entry.id, entry])));
@@ -154,10 +167,10 @@ export default function StudyPage() {
         setExerciseResults(resync.session.exerciseResults);
         setCurrentIndex(resync.index);
         setGradeRequiresReload(false);
-        setGradeError("同步已更新這次學習的進度，已跳到目前這一題，請再作答一次。");
+        setGradeError(`同步已更新這次學習的進度，已跳到目前這一題，請再作答一次。${why}`);
       } else {
         setGradeRequiresReload(true);
-        setGradeError("同步已更新這次學習的進度。這個舊畫面不會再送出答案，請重新載入最新進度。");
+        setGradeError(`同步已更新這次學習的進度。這個舊畫面不會再送出答案，請重新載入最新進度。${why}`);
       }
       isSubmittingRef.current = false;
       setIsSubmitting(false);
@@ -221,7 +234,19 @@ export default function StudyPage() {
       setUpcomingOverview(computeUpcomingReviewOverview(freshSchedules, "ja", new Date()));
       setPhase("summary");
     } else {
-      setCurrentIndex((i) => i + 1);
+      // 換下一題時以「本機真正存下來的進度」為準，不是畫面上那個可能已經過期的計數器。
+      // 背景同步會在作答之間重寫 store 並換掉 repository 實例；沿用舊計數器就會送出到
+      // 錯的位置，然後被送出前的核對擋下來。這裡先對齊，讓守門不必當作唯一防線。
+      const repository = getRepository();
+      const resync = resolveAttemptResync(repository, sessionId, "ja");
+      if (resync.kind === "realign") {
+        setItemsById(new Map(repository.listItems({ language: "ja" }).map((entry) => [entry.id, entry])));
+        setPlannedUnits(resync.session.plannedUnits);
+        setExerciseResults(resync.session.exerciseResults);
+        setCurrentIndex(resync.index);
+      } else {
+        setCurrentIndex((i) => i + 1);
+      }
     }
   }
 
