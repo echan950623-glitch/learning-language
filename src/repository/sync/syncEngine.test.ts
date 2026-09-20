@@ -349,7 +349,7 @@ describe("drainOutboxFully：content-key 衝突 remap", () => {
     expect(db.tables.schedule_states.rows[0]).toMatchObject({ interval_days: 1, streak: 0 });
   });
 
-  it("remap 之後接續的 record_graded_attempt RPC（一般流程，不是 migration）也能正確落地", async () => {
+  it("已有別名時，record_graded_attempt 的 learning_item_id 會在送出邊界換成 canonical id", async () => {
     const db = new FakeSupabaseDatabase();
     db.tables.learning_items.rows.push({ ...itemRow({ id: "winner" }), content_key: "ja|vocabulary|狗|犬|いぬ" });
     db.tables.study_sessions.rows.push({
@@ -359,15 +359,18 @@ describe("drainOutboxFully：content-key 衝突 remap", () => {
       status: "in_progress",
       started_at: "2026-01-08T00:00:00.000Z",
       completed_at: null,
-      planned_units: [{ learningItemId: "loser", ability: "recall", kind: "new" }],
-      new_item_ids: ["loser"],
+      // upsert_session 跟 record_graded_attempt 走同一套網路邊界翻譯，所以雲端這一列的
+      // planned_units 一定已經是 canonical id；真實 RPC 會拿它核對這一題的位置，
+      // 留著本機 id 會被伺服器直接拒絕（見下一個測試）。
+      planned_units: [{ learningItemId: "winner", ability: "recall", kind: "new" }],
+      new_item_ids: ["winner"],
       review_item_ids: [],
     });
     const client = createFakeSupabaseClient(db);
     writePersistedStore(createEmptyStore());
+    commitItemAlias("user_1", "loser", "winner");
 
     enqueueOutboxEntries([
-      { type: "upsert_item", payload: itemRow({ id: "loser" }) },
       {
         type: "record_graded_attempt",
         payload: {
@@ -390,13 +393,58 @@ describe("drainOutboxFully：content-key 衝突 remap", () => {
       },
     ]);
 
-    // study_sessions.planned_units 裡的 'loser' 也要能被 upsert_session 型別以外的方式
-    // remap 到——這裡故意不送 upsert_session（模擬 session 是遠端已經存在、本機只是
-    // 補送這一題的作答），驗證 record_graded_attempt 本身的 learning_item_id 有被 remap。
-    const outcome = await drainOutboxFully(asClient(client));
+    const outcome = await drainOutboxFully(asClient(client), undefined, "user_1");
     expect(outcome.success).toBe(true);
     expect(db.tables.review_attempts.rows).toHaveLength(1);
     expect(db.tables.review_attempts.rows[0].learning_item_id).toBe("winner");
+  });
+
+  it("雲端 session 的 planned_units 還停在本機 id 時，作答被伺服器拒絕且完整保留", async () => {
+    const db = new FakeSupabaseDatabase();
+    db.tables.learning_items.rows.push({ ...itemRow({ id: "winner" }), content_key: "ja|vocabulary|狗|犬|いぬ" });
+    db.tables.study_sessions.rows.push({
+      id: "session_1",
+      user_id: "user_1",
+      language: "ja",
+      status: "in_progress",
+      started_at: "2026-01-08T00:00:00.000Z",
+      completed_at: null,
+      planned_units: [{ learningItemId: "loser", ability: "recall", kind: "new" }],
+      new_item_ids: ["loser"],
+      review_item_ids: [],
+    });
+    const client = createFakeSupabaseClient(db);
+    writePersistedStore(createEmptyStore());
+    commitItemAlias("user_1", "loser", "winner");
+
+    enqueueOutboxEntries([
+      {
+        type: "record_graded_attempt",
+        payload: {
+          attempt_id: "attempt_1",
+          session_id: "session_1",
+          learning_item_id: "loser",
+          ability: "recall",
+          exercise_id: "ex_1",
+          exercise_type: "recall",
+          result: "correct",
+          used_hint: false,
+          response_time_ms: 500,
+          reviewed_at: "2026-01-08T00:05:00.000Z",
+          expected_schedule: null,
+          schedule: { due_at: "2026-01-09T00:00:00.000Z", interval_days: 1, streak: 1, lapse_count: 0 },
+          item_status: "learning",
+          session_completed: true,
+          session_completed_at: "2026-01-08T00:05:00.000Z",
+        },
+      },
+    ]);
+
+    const outcome = await drainOutboxFully(asClient(client), undefined, "user_1");
+    expect(outcome.success).toBe(false);
+    expect(outcome.message).toContain("這一題應該是 learningItemId");
+    expect(db.tables.review_attempts.rows).toHaveLength(0);
+    expect(listOutboxEntries()).toHaveLength(1);
   });
 
   it("一般作答送出前排程已被另一裝置更新時，拒絕覆蓋並保留 outbox", async () => {

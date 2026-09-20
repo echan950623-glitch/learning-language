@@ -226,9 +226,14 @@ export class FakeSupabaseDatabase {
 
   private nextAttemptSeq = 1;
 
+  /**
+   * 步驟順序刻意跟 20260918170507 的 `public.record_graded_attempt` 一致：
+   * 重送核對 → expected_schedule CAS → 進入 legacy（session 存在／in_progress／
+   * learning_item 存在／plannedUnits 位置核對）。session 不存在的錯誤是在 CAS **之後**
+   * 才會冒出來的，順序寫反會讓測試看不到真實裝置上實際遇到的那條路徑。
+   */
   rpcRecordGradedAttempt(payload: RpcRecordGradedAttemptPayload): FakeResult<Row> {
     const session = this.tables.study_sessions.rows.find((row) => row.id === payload.session_id);
-    if (!session) return { data: null, error: { message: `session "${payload.session_id}" not found` }, status: 400 };
 
     const existing = this.tables.review_attempts.rows.find(
       (row) => row.session_id === payload.session_id && row.exercise_id === payload.exercise_id
@@ -239,11 +244,6 @@ export class FakeSupabaseDatabase {
         schedule?.due_at === payload.schedule.due_at && schedule?.interval_days === payload.schedule.interval_days &&
         schedule?.streak === payload.schedule.streak && schedule?.lapse_count === payload.schedule.lapse_count;
       return exact ? { data: existing, error: null, status: 200 } : { data: null, error: { message: "sync_conflict:record_graded_attempt" }, status: 409 };
-    }
-
-    const item = this.tables.learning_items.rows.find((row) => row.id === payload.learning_item_id);
-    if (!item) {
-      return { data: null, error: { message: `learningItemId "${payload.learning_item_id}" not found` }, status: 400 };
     }
 
     const currentSchedule = this.tables.schedule_states.rows.find(
@@ -257,11 +257,48 @@ export class FakeSupabaseDatabase {
         (currentSchedule.last_reviewed_at ?? null) === expected.last_reviewed_at;
     if (!scheduleMatches) return { data: null, error: { message: "sync_conflict:schedule_changed" }, status: 409 };
 
+    // --- 以下對應 private.record_graded_attempt_legacy ---
+    if (!session) {
+      return { data: null, error: { message: `record_graded_attempt: session "${payload.session_id}" 不存在` }, status: 400 };
+    }
+    if (session.status !== "in_progress") {
+      return {
+        data: null,
+        error: { message: `record_graded_attempt: session "${payload.session_id}" 已經是 ${session.status}，不能再評分` },
+        status: 400,
+      };
+    }
+
+    const item = this.tables.learning_items.rows.find((row) => row.id === payload.learning_item_id);
+    if (!item) {
+      return { data: null, error: { message: `record_graded_attempt: learningItemId "${payload.learning_item_id}" 不存在` }, status: 400 };
+    }
+
+    const expectedIndex = this.tables.review_attempts.rows.filter((row) => row.session_id === payload.session_id).length;
+    const expectedUnit = (session.planned_units as Array<{ learningItemId: string; ability: string }> | undefined)?.[expectedIndex];
+    if (!expectedUnit) {
+      return { data: null, error: { message: `record_graded_attempt: session "${payload.session_id}" 已經沒有下一題可以評分` }, status: 400 };
+    }
+    if (expectedUnit.learningItemId !== payload.learning_item_id) {
+      return {
+        data: null,
+        error: { message: `record_graded_attempt: 這一題應該是 learningItemId "${expectedUnit.learningItemId}"，收到的是 "${payload.learning_item_id}"` },
+        status: 400,
+      };
+    }
+    if (expectedUnit.ability !== payload.ability) {
+      return {
+        data: null,
+        error: { message: `record_graded_attempt: 這一題應該是 ability "${expectedUnit.ability}"，收到的是 "${payload.ability}"` },
+        status: 400,
+      };
+    }
+
     const attemptRow: ReviewAttemptRow & { seq: number } = {
       id: payload.attempt_id,
       user_id: item.user_id as string,
       session_id: payload.session_id,
-      sequence_in_session: this.tables.review_attempts.rows.filter((r) => r.session_id === payload.session_id).length,
+      sequence_in_session: expectedIndex,
       exercise_id: payload.exercise_id,
       learning_item_id: payload.learning_item_id,
       language: item.language as ReviewAttemptRow["language"],
@@ -403,7 +440,8 @@ export function createFakeSupabaseClient(db: FakeSupabaseDatabase = new FakeSupa
       }
       if (name === "abandon_study_session_guarded") {
         const session = db.tables.study_sessions.rows.find((row) => row.id === args.payload.sessionId);
-        if (!session || session.status === "completed") return { data: null, error: { message: "sync_conflict:completed_session" }, status: 409 };
+        if (!session) return { data: null, error: { message: "sync_conflict:study_session_missing" }, status: 409 };
+        if (session.status === "completed") return { data: null, error: { message: "sync_conflict:completed_session" }, status: 409 };
         session.status = "abandoned";
         return { data: session, error: null, status: 200 };
       }

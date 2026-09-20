@@ -60,6 +60,7 @@ import {
   translateOutgoingOperation,
 } from "./alias";
 import { buildSyncDiagnostics, type SyncDiagnostics } from "./diagnostics";
+import { restoreMissingCloudSession } from "./missingSessionRecovery";
 import { checkAlreadyApplied, rebaseScheduleConflict } from "./scheduleRebase";
 
 // supabase-js 的型別（Database 預設是 any），只用來標註「這是一個真正的 Supabase client」，
@@ -417,6 +418,43 @@ async function replayScheduleConflict(
   return { outcome: "failed", kind: "error", message };
 }
 
+/** 伺服器明確拒絕（RPC raise → PostgREST 4xx）；離線／5xx 不屬於可以推理的範圍。 */
+function isServerRejection(status: number): boolean {
+  return status >= 400 && status < 500;
+}
+
+/**
+ * 作答被伺服器拒絕時，檢查是不是「雲端根本沒有這個 session」造成的，是的話用本機真實
+ * 的 session 紀錄補上再重試（見 missingSessionRecovery.ts 的安全前提）。
+ *
+ * 補送成功後**不移除** entry，回傳 `advanced` 讓 drain 迴圈用同一筆重跑一次；同一輪
+ * drain 對同一個 session 只補一次，避免補送成功但作答仍失敗時原地空轉。
+ * 不適用或被安全前提拒絕時回傳一段註記（或空字串），由呼叫端接在原始錯誤後面交給
+ * 既有的處理路徑——補送被拒絕不應該蓋掉其他恢復機制（例如排程無損重放）的判斷與說明。
+ */
+async function restoreMissingSession(
+  supabase: SupabaseClient,
+  entry: OutboxEntry & { type: "record_graded_attempt" },
+  userId: string
+): Promise<{ outcome: StepOutcome } | { note: string }> {
+  const sessionKey = `${userId}:${entry.payload.session_id}`;
+  if (sessionsRestoredThisDrain.has(sessionKey)) return { note: "" };
+
+  const restored = await restoreMissingCloudSession(supabase, userId, entry);
+  if (restored.kind === "not_applicable") return { note: "" };
+  if (restored.kind === "error") throw new SyncCallError(restored.status, restored.message);
+  if (restored.kind === "refused") {
+    return { note: `（補送 session 未執行：${restored.reason}——${restored.detail}）` };
+  }
+  // 補送 session 不會改變本機任何資料，所以不需要觸發重新拉取；
+  // 真正需要重新同步的情況（別名、排程重放）由各自的路徑負責。
+  sessionsRestoredThisDrain.add(sessionKey);
+  return { outcome: { outcome: "advanced" } };
+}
+
+/** 同一輪 drain 內已經補送過 session 的 `userId:sessionId`，見 `restoreMissingSession`。 */
+const sessionsRestoredThisDrain = new Set<string>();
+
 async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
   const entries = listOutboxEntries();
   if (entries.length === 0) return { outcome: "empty" };
@@ -445,10 +483,20 @@ async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
       if (entry.type === "upsert_item" && isContentKeyConflict(response.error)) {
         return resolveContentKeyConflict(supabase, entry as OutboxEntry & { type: "upsert_item" });
       }
-      if (replayUserId && isGradedOperation(entry) && response.error.message.includes("sync_conflict:schedule_changed")) {
-        return await replayScheduleConflict(supabase, entry, replayUserId, response.error.message);
+      // 先看「雲端有沒有這個 session」再處理排程衝突：伺服器的 CAS 比 session 存在檢查
+      // 更早執行，所以雲端缺 session 時也可能先回報 schedule_changed；順序寫反的話，
+      // 無損重放會在補送 session 之前就先撞上 session 不存在而整個卡住。
+      let restoreNote = "";
+      if (replayUserId && entry.type === "record_graded_attempt" && isServerRejection(response.status)) {
+        const restored = await restoreMissingSession(supabase, entry, replayUserId);
+        if ("outcome" in restored) return restored.outcome;
+        restoreNote = restored.note;
       }
-      throw new SyncCallError(response.status, response.error.message);
+      const failureMessage = `${response.error.message}${restoreNote}`;
+      if (replayUserId && isGradedOperation(entry) && response.error.message.includes("sync_conflict:schedule_changed")) {
+        return await replayScheduleConflict(supabase, entry, replayUserId, failureMessage);
+      }
+      throw new SyncCallError(response.status, failureMessage);
     }
     removeOutboxEntry(entry.id);
     return { outcome: "advanced" };
@@ -500,6 +548,7 @@ export async function drainOutboxFully(
   return runExclusiveDrain(async () => {
     try {
       if (userId) transientDrainUserId = userId;
+      sessionsRestoredThisDrain.clear();
       for (;;) {
         const step = await drainStep(supabase);
         if (step.outcome === "empty") return { success: true };
@@ -509,6 +558,7 @@ export async function drainOutboxFully(
     } finally {
       // 直接 migration drain（沒有 activeConfig）只在這一輪暫存 userId；不可洩漏到下一個帳戶。
       transientDrainUserId = null;
+      sessionsRestoredThisDrain.clear();
     }
   });
 }
@@ -644,6 +694,7 @@ export function __resetSyncEngineForTests(): void {
   drainChain = Promise.resolve();
   transientDrainUserId = null;
   usersPendingAliasRefresh.clear();
+  sessionsRestoredThisDrain.clear();
 }
 
 // ---------------------------------------------------------------------------

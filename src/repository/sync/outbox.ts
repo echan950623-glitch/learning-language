@@ -439,6 +439,17 @@ export function outboxPendingCount(): number {
   return readOutboxEntries().length;
 }
 
+/**
+ * 這個 session 是否已經有待送的 `upsert_session`。
+ *
+ * 作答 RPC 需要雲端已經有對應的 session 列；`SyncingLearningRepository` 在 enqueue 作答前
+ * 用這個判斷要不要先補一筆建立 session 的操作（見該檔 `recordGradedAttempt` 的註解）。
+ * 讀取失敗會照常丟出 `OutboxPersistenceError`，由呼叫端 fail closed，不會被當成「沒有」。
+ */
+export function outboxHasPendingSessionUpsert(sessionId: string): boolean {
+  return readOutboxEntries().some((entry) => entry.type === "upsert_session" && entry.payload.id === sessionId);
+}
+
 export function enqueueOutboxEntry(operation: OutboxOperation): OutboxEntry {
   const entry: OutboxEntry = {
     ...operation,

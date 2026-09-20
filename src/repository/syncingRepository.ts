@@ -40,6 +40,7 @@ import {
   enqueueOutboxEntries,
   enqueueOutboxEntry,
   learningItemToRow,
+  outboxHasPendingSessionUpsert,
   studySessionToRow,
   type MarkAttemptCorrectRpcInput,
   type OutboxOperation,
@@ -209,13 +210,40 @@ export class SyncingLearningRepository implements LearningRepository {
     return session;
   }
 
+  /**
+   * session 不是一定經由這個 class 建立的：`/study` 恢復既有 in_progress session 時不會
+   * 再呼叫 `getOrCreateInProgressSession`，而冷啟動時 auth 尚未 resolve 的那段時間，
+   * `getRepository()` 回傳的是沒有 outbox 的純本機 repository——那段時間建立的 session
+   * 從來沒有進過 outbox。作答 RPC 需要雲端已經有對應的 session 列，否則會永遠失敗在
+   * `record_graded_attempt: session "…" 不存在`，而且它是 FIFO 首筆，後面全部跟著停擺。
+   *
+   * 所以這裡在 enqueue 作答之前先確認「這個 session 有沒有待送的建立操作」，沒有就用
+   * **作答前**的 session 快照補一筆——刻意用作答前的狀態（必然是 in_progress、
+   * completed_at 為 null），讓雲端重播的順序跟實際發生順序一致；直接拿本機最終
+   * （可能已 completed）的狀態回填會讓後續作答撞上「session 已經是 completed」。
+   * session 在整段進行中的欄位都不會變，所以雲端已經有同一列時，guarded RPC 逐欄核對後
+   * 是無副作用的冪等成功。兩筆操作一次寫入 outbox，不會出現只寫到一半的順序。
+   */
   recordGradedAttempt(input: RecordGradedAttemptInput): RecordGradedAttemptResult {
     const expectedSchedule = scheduleExpectation(this.inner.getScheduleState(input.learningItemId, input.ability));
+    const sessionBeforeAttempt = this.inner
+      .listStudySessions({ status: "all" })
+      .find((session) => session.id === input.sessionId);
+    const needsSessionUpsert =
+      sessionBeforeAttempt !== undefined && !outboxHasPendingSessionUpsert(input.sessionId);
+
     const result = this.inner.recordGradedAttempt(input);
-    this.enqueueAndKick({
+
+    const operations: OutboxOperation[] = [];
+    if (needsSessionUpsert && sessionBeforeAttempt) {
+      operations.push({ type: "upsert_session", payload: studySessionToRow(sessionBeforeAttempt, this.userId) });
+    }
+    operations.push({
       type: "record_graded_attempt",
       payload: buildRecordGradedAttemptPayload(input, result, expectedSchedule),
     });
+    enqueueOutboxEntries(operations);
+    kick();
     return result;
   }
 

@@ -39,7 +39,17 @@ describe("SyncingLearningRepository CAS payload", () => {
       exerciseType: "recall", result: "incorrect", usedHint: false, responseTimeMs: 500,
       now: new Date("2026-01-08T00:05:00.000Z"),
     });
-    const first = listOutboxEntries()[0];
+    // 這筆 session 是直接寫進 store 的（等同冷啟動時由純本機 repository 建立），
+    // 從來沒有進過 outbox；作答前必須先補一筆「作答前狀態」的 upsert_session，
+    // 否則雲端沒有這個 session，作答會永遠失敗在 `session "…" 不存在`。
+    const sessionEntry = listOutboxEntries()[0];
+    expect(sessionEntry.type).toBe("upsert_session");
+    if (sessionEntry.type !== "upsert_session") throw new Error("unexpected outbox operation");
+    expect(sessionEntry.payload.id).toBe("session_1");
+    expect(sessionEntry.payload.status).toBe("in_progress");
+    expect(sessionEntry.payload.completed_at).toBeNull();
+
+    const first = listOutboxEntries()[1];
     expect(first.type).toBe("record_graded_attempt");
     if (first.type !== "record_graded_attempt") throw new Error("unexpected outbox operation");
     expect(first.payload.attempt_id).toBe(graded.attempt.id);
@@ -50,7 +60,7 @@ describe("SyncingLearningRepository CAS payload", () => {
 
     const scheduleBeforeCorrection = graded.schedule;
     repository.markAttemptCorrect({ sessionId: "session_1", exerciseId: "ex_1" });
-    const second = listOutboxEntries()[1];
+    const second = listOutboxEntries()[2];
     expect(second.type).toBe("mark_attempt_correct");
     if (second.type !== "mark_attempt_correct") throw new Error("unexpected outbox operation");
     expect(second.payload.expected_schedule).toEqual({
