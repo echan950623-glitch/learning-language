@@ -190,6 +190,31 @@ const OUTBOX_OPERATION_TYPES: readonly OutboxOperationType[] = [
 // 本機 domain 物件 <-> Supabase row 互轉（camelCase <-> snake_case）
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 時間格式正規化（網路邊界）
+// ---------------------------------------------------------------------------
+
+/**
+ * Supabase 的 `timestamptz` 回傳形式是 `2026-09-15T13:41:49.328+00:00`，而本機 store
+ * 一律使用 `Date.toISOString()` 的 `Z` 形式——`schema.ts` 的 `ISO_DATE_REGEX` 也只接受
+ * `Z` 結尾。兩者代表同一瞬間，但字串不同：直接把雲端的值寫進本機 store，`sanitizeStore`
+ * 會判定整筆紀錄不合法而**靜默丟棄**，項目被丟掉之後，引用它的排程、作答與進行中的
+ * session 會一起被丟掉（2026-09-21 實機就是這樣：雲端二十幾筆 in_progress，本機一筆都
+ * 留不住，剛建立的 session 在 pull-merge 之後消失）。
+ *
+ * 所以在「雲端 row → 本機 domain 物件」這個邊界統一正規化成 `Z` 形式，本機就只會有一種
+ * 寫法，字串比較與排序也維持可靠。無法解析的值原樣保留，交給 schema 驗證照常拒絕——
+ * 這裡只負責統一等價寫法，不負責掩蓋真正的壞資料。
+ */
+export function toIsoInstant(value: string): string {
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : value;
+}
+
+function toIsoInstantOrUndefined(value: string | null): string | undefined {
+  return value === null ? undefined : toIsoInstant(value);
+}
+
 export function learningItemToRow(item: LearningItem, userId: string): LearningItemRow {
   return {
     id: item.id,
@@ -226,7 +251,7 @@ export function rowToLearningItem(row: LearningItemRow): LearningItem {
     source: row.source,
     tags: Array.isArray(row.tags) ? [...row.tags] : [],
     status: row.status,
-    createdAt: row.created_at,
+    createdAt: toIsoInstant(row.created_at),
     isSeed: row.is_seed,
   };
 }
@@ -250,11 +275,11 @@ export function rowToScheduleState(row: ScheduleStateRow): ScheduleState {
     learningItemId: row.learning_item_id,
     ability: row.ability,
     language: row.language,
-    dueAt: row.due_at,
+    dueAt: toIsoInstant(row.due_at),
     intervalDays: row.interval_days,
     streak: row.streak,
     lapseCount: row.lapse_count,
-    lastReviewedAt: row.last_reviewed_at ?? undefined,
+    lastReviewedAt: toIsoInstantOrUndefined(row.last_reviewed_at),
   };
 }
 
@@ -283,8 +308,8 @@ export function rowToStudySessionShell(row: StudySessionRow): Omit<StudySession,
     id: row.id,
     language: row.language,
     status: row.status,
-    startedAt: row.started_at,
-    completedAt: row.completed_at ?? undefined,
+    startedAt: toIsoInstant(row.started_at),
+    completedAt: toIsoInstantOrUndefined(row.completed_at),
     plannedUnits: Array.isArray(row.planned_units) ? row.planned_units.map((unit) => ({ ...unit })) : [],
     newItemIds: Array.isArray(row.new_item_ids) ? [...row.new_item_ids] : [],
     reviewItemIds: Array.isArray(row.review_item_ids) ? [...row.review_item_ids] : [],
@@ -321,7 +346,7 @@ export function rowToReviewAttempt(row: ReviewAttemptRow): ReviewAttempt {
     result: row.result,
     usedHint: row.used_hint,
     responseTimeMs: row.response_time_ms,
-    reviewedAt: row.reviewed_at,
+    reviewedAt: toIsoInstant(row.reviewed_at),
   };
 }
 
