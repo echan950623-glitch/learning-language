@@ -73,11 +73,13 @@ describe("本機缺少雲端已有的 schedule → sync_conflict:schedule_change
 
     const outcome = await drainOutboxFully(client, undefined, USER);
     expect(outcome.success).toBe(false);
-    expect(outcome.message).toBe("sync_conflict:schedule_changed");
+    // 沒有 canonical alias：無損重放拒絕，訊息保留原始錯誤並附上拒絕原因。
+    expect(outcome.message).toContain("sync_conflict:schedule_changed");
+    expect(outcome.message).toContain("no_alias");
     // FIFO 首筆（作答）與其後所有操作都留著，且不會自己解開。
     expect(listOutboxEntries()[0].type).toBe("record_graded_attempt");
     const again = await drainOutboxFully(client, undefined, USER);
-    expect(again.message).toBe("sync_conflict:schedule_changed");
+    expect(again.message).toContain("no_alias");
     expect(db.tables.review_attempts.rows).toHaveLength(0);
   });
 });

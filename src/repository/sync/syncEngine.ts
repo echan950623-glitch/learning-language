@@ -60,6 +60,7 @@ import {
   translateOutgoingOperation,
 } from "./alias";
 import { buildSyncDiagnostics, type SyncDiagnostics } from "./diagnostics";
+import { checkAlreadyApplied, rebaseScheduleConflict } from "./scheduleRebase";
 
 // supabase-js 的型別（Database 預設是 any），只用來標註「這是一個真正的 Supabase client」，
 // 不依賴任何尚未產生的 generated types。測試時傳入結構相容的假 client 並用
@@ -155,7 +156,7 @@ interface SupabaseCallResult {
 }
 
 let transientDrainUserId: string | null = null;
-/** drain 途中建立過別名、尚未通知 `onAliasCommitted`。 */
+/** drain 途中建立過別名或重放過排程、尚未通知 `onAliasCommitted`。 */
 const usersPendingAliasRefresh = new Set<string>();
 
 async function runSupabaseCall(supabase: SupabaseClient, entry: OutboxEntry): Promise<SupabaseCallResult> {
@@ -388,16 +389,64 @@ async function resolveContentKeyConflict(
   }
 }
 
+function isGradedOperation(entry: OutboxEntry): boolean {
+  return entry.type === "record_graded_attempt" || entry.type === "mark_attempt_correct";
+}
+
+/**
+ * 無損重放（見 scheduleRebase.ts 的安全前提）：只處理已有 canonical alias 的作答／改判撞上
+ * `schedule_changed`。原始 entry 不改寫；只有正式 RPC 成功（或證明雲端已有相同結果）才移除。
+ * 任何前提不成立就保留 entry 並回報原因，繼續 fail closed。
+ */
+async function replayScheduleConflict(
+  supabase: SupabaseClient,
+  entry: OutboxEntry,
+  userId: string,
+  originalMessage: string
+): Promise<StepOutcome> {
+  const rebase = await rebaseScheduleConflict(supabase, userId, entry);
+  if (rebase.kind === "applied" || rebase.kind === "already_applied") {
+    removeOutboxEntry(entry.id);
+    usersPendingAliasRefresh.add(userId);
+    return { outcome: "advanced" };
+  }
+  if (rebase.kind === "error") throw new SyncCallError(rebase.status, rebase.message);
+  const reason = rebase.kind === "refused" ? rebase.reason : "unexpected";
+  const message = `${originalMessage}（無損重放未執行：${reason}）`;
+  markOutboxEntryFailed(entry.id, message);
+  return { outcome: "failed", kind: "error", message };
+}
+
 async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
   const entries = listOutboxEntries();
   if (entries.length === 0) return { outcome: "empty" };
 
   const entry = entries[0];
   try {
+    const replayUserId = activeConfig?.userId ?? transientDrainUserId;
+    if (replayUserId && isGradedOperation(entry)) {
+      // 上一次重放的 RPC 已成功、但本機來不及移除 entry：直接視為完成，不重複作答。
+      const previous = await checkAlreadyApplied(supabase, replayUserId, entry);
+      if (previous.kind === "already_applied") {
+        removeOutboxEntry(entry.id);
+        usersPendingAliasRefresh.add(replayUserId);
+        return { outcome: "advanced" };
+      }
+      if (previous.kind === "error") throw new SyncCallError(previous.status, previous.message);
+      if (previous.kind === "refused") {
+        const message = `sync_conflict:replay_refused（${previous.reason}）`;
+        markOutboxEntryFailed(entry.id, message);
+        return { outcome: "failed", kind: "error", message };
+      }
+    }
+
     const response = await runSupabaseCall(supabase, entry);
     if (response.error) {
       if (entry.type === "upsert_item" && isContentKeyConflict(response.error)) {
         return resolveContentKeyConflict(supabase, entry as OutboxEntry & { type: "upsert_item" });
+      }
+      if (replayUserId && isGradedOperation(entry) && response.error.message.includes("sync_conflict:schedule_changed")) {
+        return await replayScheduleConflict(supabase, entry, replayUserId, response.error.message);
       }
       throw new SyncCallError(response.status, response.error.message);
     }
@@ -472,9 +521,10 @@ export interface SyncEngineConfig {
   supabase: SupabaseClient;
   userId: string;
   /**
-   * 背景 drain 期間建立了新的 local→canonical 別名時呼叫。別名只統一「送出時」的雲端身分，
-   * 本機的空白副本仍是 new、沒有雲端已有的排程；呼叫端應重新拉取並合併雲端資料，
-   * 否則使用者會在這份副本上當成新字作答，送出時 expected_schedule=null 撞上雲端既有排程。
+   * 背景 drain 期間建立了新的 local→canonical 別名，或無損重放成功寫入雲端排程時呼叫。
+   * 別名只統一「送出時」的雲端身分，本機的空白副本仍是 new、沒有雲端已有的排程；重放則讓雲端
+   * 排程與本機自己推導的排程不同。呼叫端應重新拉取並合併雲端資料，否則使用者會在過期的本機
+   * 排程上繼續作答，送出時撞上雲端既有排程。
    */
   onAliasCommitted?: () => void;
 }

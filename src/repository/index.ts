@@ -90,7 +90,7 @@ function createLocalOnlyRepository(): LearningRepository {
 
 /**
  * 拉取雲端資料併回本機，成功後換一份會讀到合併結果的 singleton（見 syncEngine.ts 開頭註解）。
- * 登入當下與「背景 drain 建立了別名」後都走這條，兩者行為一致；`epoch` 讓已被換掉的設定
+ * 登入當下與「背景 drain 建立別名或重放排程」後都走這條，兩者行為一致；`epoch` 讓已被換掉的設定
  * （登出／換人）之後才 settle 的結果不會覆蓋較新的 singleton。
  */
 function refreshFromRemote(options: CloudSyncOptions, epoch: number): void {
