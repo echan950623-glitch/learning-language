@@ -11,11 +11,9 @@ export function AccountSyncPanel() {
   const [checked, setChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sync = useSyncExternalStore(subscribeSyncStatus, getSyncStatus, () => SERVER_SNAPSHOT);
-  // 只在有待同步項目時讀一次本機 outbox 摘要（唯讀）；狀態每次變動才重算。
-  const diagnostics = useMemo(
-    () => (sync.enabled && sync.pendingCount > 0 ? getSyncDiagnostics() : null),
-    [sync]
-  );
+  // 登入後就可展開的唯讀摘要（outbox ＋ 本機 store 結構）；狀態每次變動才重算。
+  // 佇列清空之後同樣要看得到——「pendingCount 0 但學習畫面不讓作答」正是需要這份資料的情況。
+  const diagnostics = useMemo(() => (sync.enabled ? getSyncDiagnostics() : null), [sync]);
 
   useEffect(() => {
     let active = true;

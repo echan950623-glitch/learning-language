@@ -36,10 +36,46 @@ export interface SyncHeadDiagnostics {
   localItemStatus: string | null;
 }
 
+/** 本機 store 的結構摘要；只有計數、ID 與布林，不含任何單字內容。 */
+export interface LocalStateDiagnostics {
+  items: number;
+  schedules: number;
+  attempts: number;
+  sessions: number;
+  /** 同一語言同時只該有一個；大於 1 代表恢復流程會挑到哪一筆變得不確定。 */
+  inProgressSessions: number;
+  aliasedItems: number;
+  unresolvedConflicts: number;
+  /** `/study` 恢復時會拿到的那一筆（store 裡第一個 in_progress）。 */
+  activeSession: ActiveSessionDiagnostics | null;
+}
+
+export interface ActiveSessionDiagnostics {
+  id: string;
+  language: string;
+  startedAt: string;
+  plannedUnits: number;
+  exerciseResults: number;
+  /** 尚未作答的題目中引用不到本機項目的數量；大於 0 時 `/study` 會放棄這筆並重建新的。 */
+  unresolvedRemainingUnits: number;
+  /** 從目前進度開始的前三題：項目在不在、這個能力有沒有排程（沒有就會被排成「新內容」）。 */
+  upcoming: UpcomingUnitDiagnostics[];
+}
+
+export interface UpcomingUnitDiagnostics {
+  index: number;
+  learningItemId: string;
+  ability: AbilityKind;
+  kind: string;
+  itemExists: boolean;
+  hasSchedule: boolean;
+}
+
 export interface SyncDiagnostics {
   pendingCount: number;
   pendingByType: Partial<Record<OutboxOperationType, number>>;
   head: SyncHeadDiagnostics | null;
+  local: LocalStateDiagnostics;
 }
 
 function fromExpected(expected: ExpectedScheduleState | null): ScheduleSummary | null {
@@ -128,6 +164,45 @@ function describeHead(entry: OutboxEntry, store: PersistedStore, aliases: AliasS
   };
 }
 
+function describeLocalState(store: PersistedStore, aliases: AliasStoreSnapshot | null): LocalStateDiagnostics {
+  const inProgress = store.studySessions.filter((session) => session.status === "in_progress");
+  const session = inProgress[0];
+  const itemIds = new Set(store.items.map((item) => item.id));
+  const scheduleKeys = new Set(store.scheduleStates.map((schedule) => `${schedule.learningItemId}:${schedule.ability}`));
+
+  return {
+    items: store.items.length,
+    schedules: store.scheduleStates.length,
+    attempts: store.reviewAttempts.length,
+    sessions: store.studySessions.length,
+    inProgressSessions: inProgress.length,
+    aliasedItems: aliases?.items.length ?? 0,
+    unresolvedConflicts: aliases?.conflicts.length ?? 0,
+    activeSession: session
+      ? {
+          id: session.id,
+          language: session.language,
+          startedAt: session.startedAt,
+          plannedUnits: session.plannedUnits.length,
+          exerciseResults: session.exerciseResults.length,
+          unresolvedRemainingUnits: session.plannedUnits
+            .slice(session.exerciseResults.length)
+            .filter((unit) => !itemIds.has(unit.learningItemId)).length,
+          upcoming: session.plannedUnits
+            .slice(session.exerciseResults.length, session.exerciseResults.length + 3)
+            .map((unit, offset) => ({
+              index: session.exerciseResults.length + offset,
+              learningItemId: unit.learningItemId,
+              ability: unit.ability,
+              kind: unit.kind,
+              itemExists: itemIds.has(unit.learningItemId),
+              hasSchedule: scheduleKeys.has(`${unit.learningItemId}:${unit.ability}`),
+            })),
+        }
+      : null,
+  };
+}
+
 export function buildSyncDiagnostics(
   entries: OutboxEntry[],
   store: PersistedStore,
@@ -141,5 +216,6 @@ export function buildSyncDiagnostics(
     pendingCount: entries.length,
     pendingByType,
     head: entries.length > 0 ? describeHead(entries[0], store, aliases) : null,
+    local: describeLocalState(store, aliases),
   };
 }

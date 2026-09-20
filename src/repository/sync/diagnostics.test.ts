@@ -22,7 +22,21 @@ function entry(operation: Omit<OutboxEntry, "id" | "createdAt" | "attempts">): O
 
 describe("buildSyncDiagnostics", () => {
   it("空佇列沒有 head", () => {
-    expect(buildSyncDiagnostics([], createEmptyStore(), null)).toEqual({ pendingCount: 0, pendingByType: {}, head: null });
+    expect(buildSyncDiagnostics([], createEmptyStore(), null)).toEqual({
+      pendingCount: 0,
+      pendingByType: {},
+      head: null,
+      local: {
+        items: 0,
+        schedules: 0,
+        attempts: 0,
+        sessions: 0,
+        inProgressSessions: 0,
+        aliasedItems: 0,
+        unresolvedConflicts: 0,
+        activeSession: null,
+      },
+    });
   });
 
   it("首筆作答：顯示類型、expected=null、本機沒有排程，並統計各類型數量；不含單字內容", () => {
@@ -70,5 +84,62 @@ describe("buildSyncDiagnostics", () => {
       type: "mark_attempt_correct", localItemId: "item_local", canonicalItemId: "item_local", ability: "reading",
       expectedSchedule: { streak: 0, lapseCount: 1 }, localSchedule: { streak: 0, lapseCount: 1 },
     });
+  });
+});
+
+describe("本機結構摘要", () => {
+  it("回報 in_progress session 數量、目前這筆的進度，以及接下來三題的項目與排程狀態", () => {
+    const store = createEmptyStore();
+    store.items.push({
+      id: "item_a", language: "ja", type: "vocabulary", promptZh: "你好", answer: "こんにちは",
+      source: "manual", tags: [], status: "learning", createdAt: "2026-09-19T00:00:00.000Z", isSeed: false,
+    });
+    store.items.push({
+      id: "item_b", language: "ja", type: "vocabulary", promptZh: "人", answer: "人",
+      source: "manual", tags: [], status: "new", createdAt: "2026-09-19T00:00:00.000Z", isSeed: false,
+    });
+    store.scheduleStates.push({
+      learningItemId: "item_a", ability: "recall", language: "ja", dueAt: "2026-10-20T00:00:00.000Z",
+      intervalDays: 30, streak: 13, lapseCount: 1, lastReviewedAt: "2026-09-20T18:03:57.319Z",
+    });
+    const session = {
+      id: "session_1", language: "ja" as const, status: "in_progress" as const,
+      startedAt: "2026-09-20T18:03:54.044Z",
+      plannedUnits: [
+        { learningItemId: "item_a", ability: "recall" as const, kind: "new" as const },
+        { learningItemId: "item_b", ability: "recall" as const, kind: "new" as const },
+        { learningItemId: "item_gone", ability: "recall" as const, kind: "new" as const },
+      ],
+      exerciseResults: [
+        { exerciseId: "ex_1", learningItemId: "item_a", exerciseType: "recall" as const, result: "correct" as const, usedHint: false, responseTimeMs: 900 },
+      ],
+      newItemIds: ["item_a", "item_b"], reviewItemIds: [],
+    };
+    store.studySessions.push(session, { ...session, id: "session_2" });
+
+    const { local } = buildSyncDiagnostics([], store, null);
+
+    expect(local.inProgressSessions).toBe(2);
+    expect(local.activeSession).toMatchObject({
+      id: "session_1",
+      plannedUnits: 3,
+      exerciseResults: 1,
+      unresolvedRemainingUnits: 1,
+    });
+    // 從目前進度開始往後看，不是從第一題。
+    expect(local.activeSession?.upcoming).toEqual([
+      { index: 1, learningItemId: "item_b", ability: "recall", kind: "new", itemExists: true, hasSchedule: false },
+      { index: 2, learningItemId: "item_gone", ability: "recall", kind: "new", itemExists: false, hasSchedule: false },
+    ]);
+  });
+
+  it("沒有 in_progress session 時 activeSession 是 null，其餘計數仍完整", () => {
+    const store = createEmptyStore();
+    store.items.push({
+      id: "item_a", language: "ja", type: "vocabulary", promptZh: "你好", answer: "こんにちは",
+      source: "manual", tags: [], status: "learning", createdAt: "2026-09-19T00:00:00.000Z", isSeed: false,
+    });
+    const { local } = buildSyncDiagnostics([], store, null);
+    expect(local).toMatchObject({ items: 1, sessions: 0, inProgressSessions: 0, activeSession: null });
   });
 });
