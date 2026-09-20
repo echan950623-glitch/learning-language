@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateSessionResume, initializeStudySession } from "./sessionInit";
+import { evaluateSessionResume, initializeStudySession, isAttemptSubmissionCurrent } from "./sessionInit";
 import { MemoryLearningRepository } from "@/repository/memoryRepository";
 import { LocalStorageLearningRepository } from "@/repository/localStorageRepository";
 import { installMockLocalStorage, type MemoryStorage } from "@/test/localStorageMock";
@@ -51,6 +51,37 @@ describe("evaluateSessionResume（純函式）", () => {
       ],
     };
     expect(evaluateSessionResume(session, itemsById)).toEqual({ canResume: true, resumeIndex: 1 });
+  });
+});
+
+describe("isAttemptSubmissionCurrent（背景同步後送出前核對）", () => {
+  const session: StudySession = {
+    id: "session-1",
+    language: "ja",
+    status: "in_progress",
+    startedAt: NOW.toISOString(),
+    plannedUnits: [
+      { learningItemId: "item-a", ability: "recall", kind: "new" },
+      { learningItemId: "item-b", ability: "reading", kind: "review" },
+    ],
+    exerciseResults: [
+      { exerciseId: "ex-1", learningItemId: "item-a", exerciseType: "recall", result: "correct", usedHint: false, responseTimeMs: 500 },
+    ],
+    newItemIds: ["item-a"],
+    reviewItemIds: ["item-b"],
+  };
+
+  it("最新 session 的下一題與畫面一致時允許送出", () => {
+    expect(isAttemptSubmissionCurrent({ session, currentIndex: 1, learningItemId: "item-b", ability: "reading" })).toBe(true);
+  });
+
+  it.each([
+    ["session 已被同步完成", { ...session, status: "completed" as const }, 1, "item-b", "reading" as const],
+    ["最新作答數與舊畫面索引不同", session, 0, "item-a", "recall" as const],
+    ["planned item 已被同步換成另一題", session, 1, "item-a", "reading" as const],
+    ["ability 與最新 planned unit 不同", session, 1, "item-b", "recall" as const],
+  ])("%s 時拒絕舊畫面送出", (_label, currentSession, currentIndex, learningItemId, ability) => {
+    expect(isAttemptSubmissionCurrent({ session: currentSession, currentIndex, learningItemId, ability })).toBe(false);
   });
 });
 

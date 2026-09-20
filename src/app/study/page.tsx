@@ -21,7 +21,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Badge } from "@/components/Badge";
 import { abilityDisplayLabel } from "@/lib/labels";
 import { readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
-import { initializeStudySession } from "./sessionInit";
+import { initializeStudySession, isAttemptSubmissionCurrent } from "./sessionInit";
 
 type Phase = "loading" | "empty" | "active" | "summary" | "error";
 /** 一題的作答子狀態：answering＝還沒送出；graded＝已自動評分，等待使用者按下一題。 */
@@ -57,6 +57,7 @@ export default function StudyPage() {
   const [gradedResult, setGradedResult] = useState<GradeAttemptResult | null>(null);
   const [questionShownAt, setQuestionShownAt] = useState(0);
   const [gradeError, setGradeError] = useState<string | null>(null);
+  const [gradeRequiresReload, setGradeRequiresReload] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isSubmittingRef = useRef(false);
   const advancingRef = useRef(false);
@@ -110,6 +111,7 @@ export default function StudyPage() {
     setHintUsed(false);
     setGradedResult(null);
     setGradeError(null);
+    setGradeRequiresReload(false);
     setCorrectionError(null);
     setQuestionShownAt(Date.now());
     advancingRef.current = false;
@@ -138,6 +140,17 @@ export default function StudyPage() {
     const responseTimeMs = Math.max(0, Date.now() - questionShownAt);
     const repository = getRepository();
 
+    const latestSession = repository
+      .listStudySessions({ language: "ja", status: "all" })
+      .find((candidate) => candidate.id === sessionId);
+    if (!isAttemptSubmissionCurrent({ session: latestSession, currentIndex, learningItemId: item.id, ability: unit.ability })) {
+      setGradeRequiresReload(true);
+      setGradeError("同步已更新這次學習的進度。這個舊畫面不會再送出答案，請重新載入最新進度。");
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
+      return;
+    }
+
     try {
       const outcome = repository.recordGradedAttempt({
         sessionId,
@@ -157,7 +170,7 @@ export default function StudyPage() {
     } catch (error) {
       // R4：寫入失敗就停在原題，不推進、不顯示成功；使用者可以直接重按送出重試
       // （同一個 exerciseId 重試是安全的：失敗代表這次評分完全沒有寫入任何東西）。
-      setGradeError(describePersistenceError(error));
+      setGradeError(`${describePersistenceError(error)}再按一次下面的按鈕重試。`);
     } finally {
       isSubmittingRef.current = false;
       setIsSubmitting(false);
@@ -472,17 +485,27 @@ export default function StudyPage() {
 
             {gradeError ? (
               <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">
-                {gradeError}再按一次下面的按鈕重試。
+                {gradeError}
               </p>
             ) : null}
 
-            <button
-              type="submit"
-              disabled={isSubmitting || attemptText.trim().length === 0}
-              className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              確認答案
-            </button>
+            {gradeRequiresReload ? (
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90"
+              >
+                重新載入最新進度
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={isSubmitting || attemptText.trim().length === 0}
+                className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                確認答案
+              </button>
+            )}
           </form>
         ) : gradedResult ? (
           <div className="mt-auto flex flex-col gap-3">

@@ -26,6 +26,25 @@ export interface SessionResumeEvaluation {
   resumeIndex: number;
 }
 
+export interface AttemptSubmissionSnapshot {
+  session: StudySession | undefined;
+  currentIndex: number;
+  learningItemId: string;
+  ability: StudySessionPlannedUnit["ability"];
+}
+
+/**
+ * 學習頁可能在背景 pull-merge 完成前已經載入舊 session。送出前以最新 repository 快照
+ * 再核對一次位置；不同就要求重新載入，不能把舊畫面的答案套到另一題或已完成的 session。
+ */
+export function isAttemptSubmissionCurrent(snapshot: AttemptSubmissionSnapshot): boolean {
+  const { session, currentIndex, learningItemId, ability } = snapshot;
+  if (!session || session.status !== "in_progress") return false;
+  if (session.exerciseResults.length !== currentIndex) return false;
+  const expected = session.plannedUnits[currentIndex];
+  return expected?.learningItemId === learningItemId && expected.ability === ability;
+}
+
 /**
  * 純函式：判斷一個既有的 in_progress session 能不能直接恢復。
  * 「資料缺口」＝還沒作答的某個 planned unit 引用的 LearningItem 已經不存在
