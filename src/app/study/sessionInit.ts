@@ -78,6 +78,36 @@ export type StudyInitResult =
  *    不吞錯、不繼續、不假裝舊 session 是 active。
  * 3. 都沒有內容可學就是 empty。
  */
+/**
+ * 同一語言同時只該有一個 in_progress session（見 `getOrCreateInProgressSession`）。
+ * 雲端已經觀察到十幾筆同時存在的 in_progress session——pull-merge 會把其他裝置／其他時間
+ * 留下的 in_progress session 併回本機，`getInProgressSession` 只取陣列裡的第一筆，於是
+ * 「恢復哪一筆」變得不確定，而且每次沒恢復到的那些會永遠留著，雲端跟著越積越多。
+ *
+ * 這裡在恢復之前先收斂：保留最新的一筆（`listStudySessions` 已依 startedAt 由新到舊排序），
+ * 其餘標成 abandoned。abandoned 只改狀態，已產生的作答與排程完全保留，跟使用者自己按
+ * 「放棄本次學習」是同一個領域操作。任何一筆放棄失敗就整個停下來回報，不繼續往下走。
+ */
+function reconcileInProgressSessions(
+  repository: LearningRepository,
+  language: Language
+): StudySession | undefined | "abandon_failed" {
+  const inProgress = repository
+    .listStudySessions({ language, status: "all" })
+    .filter((session) => session.status === "in_progress");
+  if (inProgress.length === 0) return undefined;
+
+  const [newest, ...stale] = inProgress;
+  for (const session of stale) {
+    try {
+      repository.abandonSession(session.id);
+    } catch {
+      return "abandon_failed";
+    }
+  }
+  return newest;
+}
+
 export function initializeStudySession(
   repository: LearningRepository,
   now: Date,
@@ -87,7 +117,10 @@ export function initializeStudySession(
   const items = repository.listItems({ language: "ja" });
   const itemsById = new Map(items.map((item) => [item.id, item]));
 
-  const existing = repository.getInProgressSession("ja");
+  const existing = reconcileInProgressSessions(repository, "ja");
+  if (existing === "abandon_failed") {
+    return { phase: "error", message: "無法整理進行中的學習階段，請重新整理頁面後再試一次。" };
+  }
   if (existing) {
     const { canResume, resumeIndex } = evaluateSessionResume(existing, itemsById);
     if (canResume) {
@@ -138,4 +171,40 @@ function buildFreshSession(
   } catch (error) {
     return { phase: "error", message: describePersistenceError(error) };
   }
+}
+
+/**
+ * 送出前核對失敗（`isAttemptSubmissionCurrent` 回 false）之後要怎麼辦。
+ *
+ * 舊行為是直接停在原地、要使用者「重新載入最新進度」——但重新載入會重跑初始化，可能又
+ * 建立一筆全新 session，使用者就會一直被彈回第一題，永遠答不完（2026-09-21 手機實測）。
+ * 守門本身是對的（不能把答案寫到錯的位置），錯的是沒有出口。
+ *
+ * 這裡只讀 repository，判斷同一筆 session 現在真正的位置：
+ * - `realign`：session 還在、還在進行中、而且還有下一題——把畫面對齊到它現在的位置，
+ *   使用者就地重答那一題即可，不必重新載入、也不會多開一個 session。
+ * - `reload`：session 不見了或已經結束，只能重新初始化。
+ */
+export type AttemptResync =
+  | { kind: "realign"; session: StudySession; index: number }
+  | { kind: "reload" };
+
+export function resolveAttemptResync(
+  repository: LearningRepository,
+  sessionId: string,
+  language: Language
+): AttemptResync {
+  const session = repository
+    .listStudySessions({ language, status: "all" })
+    .find((candidate) => candidate.id === sessionId);
+  if (!session || session.status !== "in_progress") return { kind: "reload" };
+
+  const index = session.exerciseResults.length;
+  const unit = session.plannedUnits[index];
+  if (!unit) return { kind: "reload" };
+
+  const itemsById = new Map(repository.listItems({ language }).map((item) => [item.id, item]));
+  if (!itemsById.has(unit.learningItemId)) return { kind: "reload" };
+
+  return { kind: "realign", session, index };
 }

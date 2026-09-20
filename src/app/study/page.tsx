@@ -21,7 +21,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Badge } from "@/components/Badge";
 import { abilityDisplayLabel } from "@/lib/labels";
 import { readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
-import { initializeStudySession, isAttemptSubmissionCurrent } from "./sessionInit";
+import { initializeStudySession, isAttemptSubmissionCurrent, resolveAttemptResync } from "./sessionInit";
 
 type Phase = "loading" | "empty" | "active" | "summary" | "error";
 /** 一題的作答子狀態：answering＝還沒送出；graded＝已自動評分，等待使用者按下一題。 */
@@ -144,8 +144,21 @@ export default function StudyPage() {
       .listStudySessions({ language: "ja", status: "all" })
       .find((candidate) => candidate.id === sessionId);
     if (!isAttemptSubmissionCurrent({ session: latestSession, currentIndex, learningItemId: item.id, ability: unit.ability })) {
-      setGradeRequiresReload(true);
-      setGradeError("同步已更新這次學習的進度。這個舊畫面不會再送出答案，請重新載入最新進度。");
+      // 守門擋下這次送出是對的（位置已經不一樣了），但不能停在死路——直接把畫面對齊到
+      // 這筆 session 現在真正的位置，使用者就地重答即可，不必重新載入、也不會再多開一個
+      // session；真的沒辦法接續時才退回重新載入。
+      const resync = resolveAttemptResync(repository, sessionId, "ja");
+      if (resync.kind === "realign") {
+        setItemsById(new Map(repository.listItems({ language: "ja" }).map((entry) => [entry.id, entry])));
+        setPlannedUnits(resync.session.plannedUnits);
+        setExerciseResults(resync.session.exerciseResults);
+        setCurrentIndex(resync.index);
+        setGradeRequiresReload(false);
+        setGradeError("同步已更新這次學習的進度，已跳到目前這一題，請再作答一次。");
+      } else {
+        setGradeRequiresReload(true);
+        setGradeError("同步已更新這次學習的進度。這個舊畫面不會再送出答案，請重新載入最新進度。");
+      }
       isSubmittingRef.current = false;
       setIsSubmitting(false);
       return;

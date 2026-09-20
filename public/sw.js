@@ -12,7 +12,7 @@
 // - 只在 activate 時刪除自己命名規則（CACHE_PREFIX）下的舊版本快取，不動其他快取，
 //   也完全不碰 localStorage／IndexedDB（service worker 本來就無法直接存取這兩者）。
 const CACHE_PREFIX = "learning-language-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v15`;
+const CACHE_NAME = `${CACHE_PREFIX}v16`;
 const APP_SHELL = ["/", "/manifest.webmanifest"];
 const PRECACHE_ASSETS = ["/manifest.webmanifest"];
 

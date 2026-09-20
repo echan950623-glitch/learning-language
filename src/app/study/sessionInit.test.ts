@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { evaluateSessionResume, initializeStudySession, isAttemptSubmissionCurrent } from "./sessionInit";
+import { evaluateSessionResume, initializeStudySession, isAttemptSubmissionCurrent, resolveAttemptResync } from "./sessionInit";
 import { MemoryLearningRepository } from "@/repository/memoryRepository";
 import { LocalStorageLearningRepository } from "@/repository/localStorageRepository";
 import { installMockLocalStorage, type MemoryStorage } from "@/test/localStorageMock";
 import type { NewLearningItemInput, StudySession } from "@/domain/types";
+import { createEmptyStore, writePersistedStore } from "@/repository/schema";
 
 const NOW = new Date("2026-09-15T09:00:00.000Z");
 
@@ -212,5 +213,87 @@ describe("initializeStudySession — 建立新 session 本身寫入失敗", () =
 
     const result = initializeStudySession(repository, NOW);
     expect(result.phase).toBe("error");
+  });
+});
+
+describe("多筆 in_progress session 的收斂", () => {
+  it("恢復前先保留最新一筆、放棄其餘，避免恢復哪一筆變得不確定", () => {
+    installMockLocalStorage();
+    const store = createEmptyStore();
+    store.items.push({
+      id: "item_1", language: "ja", type: "vocabulary", promptZh: "人", answer: "ひと",
+      source: "manual", tags: [], status: "new", createdAt: "2026-09-15T00:00:00.000Z", isSeed: false,
+    });
+    const base = {
+      language: "ja" as const, status: "in_progress" as const,
+      plannedUnits: [{ learningItemId: "item_1", ability: "recall" as const, kind: "new" as const }],
+      exerciseResults: [], newItemIds: ["item_1"], reviewItemIds: [],
+    };
+    store.studySessions.push(
+      { ...base, id: "session_old", startedAt: "2026-09-20T17:03:31.477Z" },
+      { ...base, id: "session_mid", startedAt: "2026-09-20T18:02:25.796Z" },
+      { ...base, id: "session_new", startedAt: "2026-09-20T18:03:54.044Z" }
+    );
+    writePersistedStore(store);
+    const repository = new LocalStorageLearningRepository();
+
+    const result = initializeStudySession(repository, new Date("2026-09-20T18:05:00.000Z"));
+
+    expect(result.phase).toBe("active");
+    if (result.phase !== "active") throw new Error("unexpected");
+    expect(result.session.id).toBe("session_new");
+
+    const sessions = repository.listStudySessions({ language: "ja", status: "all" });
+    expect(sessions.filter((s) => s.status === "in_progress")).toHaveLength(1);
+    expect(sessions.find((s) => s.id === "session_old")?.status).toBe("abandoned");
+    expect(sessions.find((s) => s.id === "session_mid")?.status).toBe("abandoned");
+    // 放棄只改狀態，作答與排程不受影響。
+    expect(repository.listReviewAttempts()).toHaveLength(0);
+  });
+});
+
+describe("送出被守門擋下之後的出口", () => {
+  function buildRepository(exerciseResults: number) {
+    installMockLocalStorage();
+    const store = createEmptyStore();
+    store.items.push(
+      { id: "item_1", language: "ja", type: "vocabulary", promptZh: "你好", answer: "こんにちは",
+        source: "manual", tags: [], status: "learning", createdAt: "2026-09-15T00:00:00.000Z", isSeed: false },
+      { id: "item_2", language: "ja", type: "vocabulary", promptZh: "人", answer: "ひと",
+        source: "manual", tags: [], status: "new", createdAt: "2026-09-15T00:00:00.000Z", isSeed: false }
+    );
+    store.studySessions.push({
+      id: "session_1", language: "ja", status: "in_progress", startedAt: "2026-09-20T18:03:54.044Z",
+      plannedUnits: [
+        { learningItemId: "item_1", ability: "recall", kind: "new" },
+        { learningItemId: "item_2", ability: "recall", kind: "new" },
+      ],
+      exerciseResults: Array.from({ length: exerciseResults }, (_, index) => ({
+        exerciseId: `ex_${index}`, learningItemId: "item_1", exerciseType: "recall" as const,
+        result: "correct" as const, usedHint: false, responseTimeMs: 900,
+      })),
+      newItemIds: ["item_1", "item_2"], reviewItemIds: [],
+    });
+    writePersistedStore(store);
+    return new LocalStorageLearningRepository();
+  }
+
+  it("session 還在進行中：回報要對齊到它現在的位置，不是要求重新載入", () => {
+    const repository = buildRepository(1);
+    const resync = resolveAttemptResync(repository, "session_1", "ja");
+    expect(resync.kind).toBe("realign");
+    if (resync.kind !== "realign") throw new Error("unexpected");
+    expect(resync.index).toBe(1);
+    expect(resync.session.plannedUnits[resync.index].learningItemId).toBe("item_2");
+  });
+
+  it("session 已經沒有下一題：回報只能重新載入，不臆測位置", () => {
+    const repository = buildRepository(2);
+    expect(resolveAttemptResync(repository, "session_1", "ja").kind).toBe("reload");
+  });
+
+  it("找不到這筆 session：回報只能重新載入", () => {
+    const repository = buildRepository(1);
+    expect(resolveAttemptResync(repository, "session_missing", "ja").kind).toBe("reload");
   });
 });
