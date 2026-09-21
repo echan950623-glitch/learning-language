@@ -13,6 +13,7 @@ import type {
 } from "@/domain/types";
 import type { QueueEntryKind } from "@/domain/queue";
 import { buildExerciseForUnit } from "@/domain/exercises";
+import { buildQuickQuizUnits } from "@/domain/practice";
 import { gradeAttempt, type GradeAttemptResult } from "@/domain/grading";
 import { computeUpcomingReviewOverview, summarizeSessionResultsByAbility } from "@/domain/stats";
 import { formatDurationMs } from "@/domain/time";
@@ -52,6 +53,9 @@ export default function StudyPage() {
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [initError, setInitError] = useState<string | null>(null);
+  const [quickQuizError, setQuickQuizError] = useState<string | null>(null);
+  const [quickQuizStarting, setQuickQuizStarting] = useState(false);
+  const quickQuizStartingRef = useRef(false);
 
   const [itemsById, setItemsById] = useState<Map<string, LearningItem>>(new Map());
   const [sessionId, setSessionId] = useState("");
@@ -106,6 +110,42 @@ export default function StudyPage() {
     setCurrentIndex(result.resumeIndex);
     setPhase("active");
   }, []);
+
+  function startQuickQuiz() {
+    if (quickQuizStartingRef.current) return;
+    quickQuizStartingRef.current = true;
+    setQuickQuizStarting(true);
+    setQuickQuizError(null);
+
+    try {
+      const repository = getRepository();
+      const items = repository.listItems({ language: "ja" });
+      const units = buildQuickQuizUnits(items, readStudyQuestionCount());
+      if (units.length === 0) {
+        setQuickQuizError("目前沒有可出題的日文內容，請先新增學習項目。");
+        return;
+      }
+
+      const session = repository.getOrCreateInProgressSession("ja", units, new Date());
+      const nextItemsById = new Map(items.map((item) => [item.id, item]));
+      if (session.plannedUnits.slice(session.exerciseResults.length).some((unit) => !nextItemsById.has(unit.learningItemId))) {
+        setQuickQuizError("進行中的學習內容已變更，請重新載入後再試。");
+        return;
+      }
+
+      setItemsById(nextItemsById);
+      setSessionId(session.id);
+      setPlannedUnits(session.plannedUnits);
+      setExerciseResults(session.exerciseResults);
+      setCurrentIndex(session.exerciseResults.length);
+      setPhase("active");
+    } catch (error) {
+      setQuickQuizError(describePersistenceError(error));
+    } finally {
+      quickQuizStartingRef.current = false;
+      setQuickQuizStarting(false);
+    }
+  }
 
   // ---- 每次換題（含剛進入 active）重新產生題目內容並重設單題狀態 -----------------
   useEffect(() => {
@@ -308,6 +348,21 @@ export default function StudyPage() {
             </Link>
           }
         />
+        <section className="rounded-2xl border border-border bg-surface p-4" aria-labelledby="quick-quiz-title">
+          <h2 id="quick-quiz-title" className="text-base font-semibold text-foreground">快速測驗</h2>
+          <p className="mt-2 text-sm leading-6 text-foreground-muted">
+            從所有已儲存的日文內容隨機出題，不用等到複習日。
+          </p>
+          <button
+            type="button"
+            onClick={startQuickQuiz}
+            disabled={quickQuizStarting}
+            className="mt-4 min-h-12 w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {quickQuizStarting ? "正在準備題目…" : "開始快速測驗"}
+          </button>
+          {quickQuizError ? <p role="alert" className="mt-3 text-sm text-danger">{quickQuizError}</p> : null}
+        </section>
       </main>
     );
   }

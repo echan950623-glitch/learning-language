@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFullReviewUnits, buildWrongAnswerUnits } from "./practice";
+import { buildFullReviewUnits, buildQuickQuizUnits, buildWrongAnswerUnits } from "./practice";
 import type { LearningItem, ReviewAttempt } from "./types";
 
 function item(overrides: Partial<LearningItem> = {}): LearningItem {
@@ -122,5 +122,36 @@ describe("buildFullReviewUnits", () => {
     expect(buildFullReviewUnits([kanaOnly], [attempt()])).toEqual([
       { learningItemId: "item-1", ability: "recall", kind: "review" },
     ]);
+  });
+});
+
+describe("buildQuickQuizUnits", () => {
+  it("完全沒作答過的新單字也能出題，並包含所有必要能力", () => {
+    expect(buildQuickQuizUnits([item({ status: "new" })], 5, () => 0)).toEqual([
+      { learningItemId: "item-1", ability: "reading", kind: "review" },
+      { learningItemId: "item-1", ability: "recall", kind: "review" },
+    ]);
+  });
+
+  it("不依 item status 排除題目", () => {
+    const items = (["new", "learning", "mastered", "struggling"] as const).map((status, index) =>
+      item({ id: `item-${index}`, status, answer: "ありがとう", reading: "ありがとう" })
+    );
+    const units = buildQuickQuizUnits(items, 10, () => 0.5);
+    expect(new Set(units.map((unit) => unit.learningItemId))).toEqual(new Set(items.map((entry) => entry.id)));
+  });
+
+  it("題數遵守設定上限，且不重複抽同一能力", () => {
+    const items = Array.from({ length: 8 }, (_, index) => item({ id: `item-${index}` }));
+    const units = buildQuickQuizUnits(items, 5, () => 0.5);
+    expect(units).toHaveLength(5);
+    expect(new Set(units.map((unit) => `${unit.learningItemId}:${unit.ability}`)).size).toBe(5);
+  });
+
+  it("洗牌不改動輸入陣列或項目", () => {
+    const items = [item(), item({ id: "item-2" })];
+    const before = structuredClone(items);
+    buildQuickQuizUnits(items, 3, () => 0);
+    expect(items).toEqual(before);
   });
 });

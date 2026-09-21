@@ -110,3 +110,25 @@ export function buildFullReviewUnits(
 
   return toPlannedUnits(candidates);
 }
+
+/** 從所有已儲存項目的必要能力隨機抽題，不受作答、狀態或排程限制。 */
+export function buildQuickQuizUnits(
+  items: LearningItem[],
+  questionCount: number,
+  random: () => number = Math.random
+): StudySessionPlannedUnit[] {
+  const units = items.flatMap((item) =>
+    requiredAbilities(item).map((ability): StudySessionPlannedUnit => ({
+      learningItemId: item.id,
+      ability,
+      kind: "review",
+    }))
+  );
+
+  for (let index = units.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [units[index], units[swapIndex]] = [units[swapIndex], units[index]];
+  }
+
+  return units.slice(0, questionCount);
+}
