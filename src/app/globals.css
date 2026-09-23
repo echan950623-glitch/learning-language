@@ -16,6 +16,10 @@
   --warning-bg: #fdf1e2;
   --danger: #b3261e;
   --danger-bg: #fbe9e8;
+  --practice-recall: #4338a0;
+  --practice-recall-bg: #eeecff;
+  --practice-reading: #9a4b00;
+  --practice-reading-bg: #fff0d6;
 }
 
 @theme inline {
@@ -34,6 +38,10 @@
   --color-warning-bg: var(--warning-bg);
   --color-danger: var(--danger);
   --color-danger-bg: var(--danger-bg);
+  --color-practice-recall: var(--practice-recall);
+  --color-practice-recall-bg: var(--practice-recall-bg);
+  --color-practice-reading: var(--practice-reading);
+  --color-practice-reading-bg: var(--practice-reading-bg);
   --font-sans: "Hiragino Sans", "Noto Sans TC", "Noto Sans JP", system-ui, "PingFang TC",
     "Microsoft JhengHei", sans-serif;
 }
@@ -55,6 +63,10 @@
     --warning-bg: #34260f;
     --danger: #f2938c;
     --danger-bg: #3a1c19;
+    --practice-recall: #aaa7ff;
+    --practice-recall-bg: #2c285c;
+    --practice-reading: #ffc06c;
+    --practice-reading-bg: #442b0d;
   }
 }
 

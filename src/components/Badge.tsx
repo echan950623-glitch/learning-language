@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-type BadgeTone = "neutral" | "success" | "warning" | "danger" | "primary";
+type BadgeTone = "neutral" | "success" | "warning" | "danger" | "primary" | "recall" | "reading";
 
 const TONE_CLASSES: Record<BadgeTone, string> = {
   neutral: "bg-surface-muted text-foreground-muted",
@@ -8,6 +8,8 @@ const TONE_CLASSES: Record<BadgeTone, string> = {
   warning: "bg-warning-bg text-warning",
   danger: "bg-danger-bg text-danger",
   primary: "bg-primary/10 text-primary",
+  recall: "bg-practice-recall-bg text-practice-recall",
+  reading: "bg-practice-reading-bg text-practice-reading",
 };
 
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: BadgeTone }) {

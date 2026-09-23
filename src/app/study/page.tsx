@@ -33,6 +33,19 @@ const KIND_LABEL: Record<QueueEntryKind, string> = {
   new: "新內容",
 };
 
+const ABILITY_THEME: Record<AbilityKind, { badgeTone: "recall" | "reading"; accentClass: string; buttonClass: string }> = {
+  recall: {
+    badgeTone: "recall",
+    accentClass: "bg-practice-recall",
+    buttonClass: "bg-practice-recall text-white hover:brightness-110",
+  },
+  reading: {
+    badgeTone: "reading",
+    accentClass: "bg-practice-reading",
+    buttonClass: "bg-practice-reading text-white hover:brightness-110",
+  },
+};
+
 function buildHint(expectedAnswer: string): string {
   const chars = Array.from(expectedAnswer);
   if (chars.length <= 1) return expectedAnswer;
@@ -483,6 +496,7 @@ export default function StudyPage() {
 
   const kind: QueueEntryKind = unit.kind;
   const ability: AbilityKind = unit.ability;
+  const abilityTheme = ABILITY_THEME[ability];
   const isLastQuestion = currentIndex + 1 >= total;
 
   return (
@@ -524,10 +538,11 @@ export default function StudyPage() {
         {abandonError ? <p className="mt-1 text-xs text-danger">{abandonError}</p> : null}
       </header>
 
-      <section className="flex flex-1 flex-col gap-4 rounded-2xl border border-border bg-surface p-4">
+      <section className="relative flex flex-1 flex-col gap-4 overflow-hidden rounded-2xl border border-border bg-surface p-4 pt-5">
+        <div aria-hidden="true" className={`absolute inset-x-0 top-0 h-1.5 ${abilityTheme.accentClass}`} />
         <div className="flex items-center gap-2">
           <Badge tone={kind === "review" ? "primary" : "neutral"}>{KIND_LABEL[kind]}</Badge>
-          <Badge tone="neutral">{abilityDisplayLabel(ability, item)}</Badge>
+          <Badge tone={abilityTheme.badgeTone}>{abilityDisplayLabel(ability, item)}</Badge>
         </div>
 
         <div>
@@ -594,7 +609,7 @@ export default function StudyPage() {
               <button
                 type="submit"
                 disabled={isSubmitting || attemptText.trim().length === 0}
-                className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-sm transition-[filter,transform] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 ${abilityTheme.buttonClass}`}
               >
                 確認答案
               </button>
@@ -641,7 +656,7 @@ export default function StudyPage() {
               type="button"
               autoFocus
               onClick={handleNext}
-              className="rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90"
+              className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-sm transition-[filter,transform] active:translate-y-px ${abilityTheme.buttonClass}`}
             >
               {isLastQuestion ? "查看結果" : "下一題"}
             </button>
