@@ -37,12 +37,12 @@ const ABILITY_THEME: Record<AbilityKind, { badgeTone: "recall" | "reading"; acce
   recall: {
     badgeTone: "recall",
     accentClass: "bg-practice-recall",
-    buttonClass: "bg-practice-recall text-white hover:brightness-110",
+    buttonClass: "bg-practice-recall text-practice-button-foreground hover:brightness-110",
   },
   reading: {
     badgeTone: "reading",
     accentClass: "bg-practice-reading",
-    buttonClass: "bg-practice-reading text-white hover:brightness-110",
+    buttonClass: "bg-practice-reading text-practice-button-foreground hover:brightness-110",
   },
 };
 
