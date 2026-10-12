@@ -1,3 +1,4 @@
+import { accountStorage } from "../accountStorage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -44,7 +45,7 @@ describe("durable canonical alias journal", () => {
     commitItemAlias(userId, "local-item", "remote-item", "2026-09-19T00:00:00.000Z");
     commitAttemptAlias(userId, "session-1", "exercise-1", "remote-attempt", "2026-09-19T00:01:00.000Z");
 
-    storage.removeItem(`learning-language:sync-alias:${userId}`);
+    accountStorage().removeItem(`learning-language:sync-alias:${userId}`);
     const reloaded = loadAliasStore(userId);
     expect(resolveCanonicalItemId(reloaded, "local-item")).toBe("remote-item");
     expect(resolveLocalItemIdForCanonical(reloaded, "remote-item")).toBe("local-item");
@@ -53,35 +54,35 @@ describe("durable canonical alias journal", () => {
 
   it("重送相同決策為冪等，不重複 append journal", () => {
     commitItemAlias(userId, "local-item", "remote-item");
-    const before = storage.getItem(journalKey);
+    const before = accountStorage().getItem(journalKey);
     commitItemAlias(userId, "local-item", "remote-item");
-    expect(storage.getItem(journalKey)).toBe(before);
+    expect(accountStorage().getItem(journalKey)).toBe(before);
   });
 
   it("拒絕一對多與多對一 mapping，原 journal 完全不變", () => {
     commitItemAlias(userId, "local-a", "remote-a");
-    const before = storage.getItem(journalKey);
+    const before = accountStorage().getItem(journalKey);
     expect(() => commitItemAlias(userId, "local-a", "remote-b")).toThrow(AliasPersistenceError);
     expect(() => commitItemAlias(userId, "local-b", "remote-a")).toThrow(AliasPersistenceError);
-    expect(storage.getItem(journalKey)).toBe(before);
+    expect(accountStorage().getItem(journalKey)).toBe(before);
   });
 
   it("拒絕同一 session/exercise 指向不同 remote attempt", () => {
     commitAttemptAlias(userId, "session-1", "exercise-1", "attempt-a");
-    const before = storage.getItem(journalKey);
+    const before = accountStorage().getItem(journalKey);
     expect(() => commitAttemptAlias(userId, "session-1", "exercise-1", "attempt-b")).toThrow(AliasPersistenceError);
-    expect(storage.getItem(journalKey)).toBe(before);
+    expect(accountStorage().getItem(journalKey)).toBe(before);
   });
 
   it.each(["{broken", "{}", '[{"id":"bad"}]'])("journal 毀損時 fail closed: %s", (raw) => {
-    storage.setItem(journalKey, raw);
+    accountStorage().setItem(journalKey, raw);
     expect(() => loadAliasStore(userId)).toThrow(AliasPersistenceError);
   });
 
   it("journal 或 cache 寫入 quota failure 時拋錯，不回報成功", () => {
     storage.failWrites = true;
     expect(() => commitItemAlias(userId, "local", "remote")).toThrow(AliasPersistenceError);
-    expect(storage.getItem(journalKey)).toBeNull();
+    expect(accountStorage().getItem(journalKey)).toBeNull();
   });
 
   it("伺服器端沒有 localStorage 時 fail closed", () => {

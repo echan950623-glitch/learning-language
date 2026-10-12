@@ -1,4 +1,5 @@
 import { requiredAbilities } from "./abilities";
+import { isPracticeEligible } from "./learningPractice";
 import type { AbilityKind, LearningItem, ReviewAttempt, StudySessionPlannedUnit } from "./types";
 
 interface PracticeCandidate {
@@ -17,7 +18,7 @@ function unitKey(learningItemId: string, ability: AbilityKind): string {
 }
 
 function isAbilityKind(exerciseType: ReviewAttempt["exerciseType"]): exerciseType is AbilityKind {
-  return exerciseType === "recall" || exerciseType === "reading";
+  return exerciseType === "meaning" || exerciseType === "recall" || exerciseType === "reading";
 }
 
 function latestAttemptsByUnit(items: LearningItem[], attempts: ReviewAttempt[]): Map<string, ReviewAttempt> {
@@ -69,6 +70,7 @@ export function buildWrongAnswerUnits(
   const candidates: PracticeCandidate[] = [];
 
   for (const item of items) {
+    if (!isPracticeEligible(item)) continue;
     for (const ability of requiredAbilities(item)) {
       const latestAttempt = latest.get(unitKey(item.id, ability));
       if (latestAttempt && latestAttempt.result !== "correct") {
@@ -98,6 +100,7 @@ export function buildFullReviewUnits(
   const candidates: PracticeCandidate[] = [];
 
   for (const item of items) {
+    if (!isPracticeEligible(item)) continue;
     if (!encounteredItemIds.has(item.id)) continue;
     for (const ability of requiredAbilities(item)) {
       candidates.push({

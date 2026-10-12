@@ -1,3 +1,6 @@
+import { fetchAllRows } from "../../lib/supabase/pagination";
+import { fetchStableSnapshot } from "../../lib/supabase/snapshot";
+import { accountStorage, getAccountGeneration, withDataLock } from "../accountStorage";
 /**
  * 一次性 localStorage v2 → Supabase migration。見 ARCHITECTURE.md「一次性 migration」節：
  * 重用 outbox（不另寫一套送出機制）——批次組出跟正常操作一樣形狀的 outbox operation，
@@ -42,7 +45,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 function browserStorage(): Storage | undefined {
   if (typeof window === "undefined") return undefined;
   try {
-    return window.localStorage;
+    return accountStorage();
   } catch {
     return undefined;
   }
@@ -145,18 +148,13 @@ interface RemoteSnapshot {
 }
 
 async function fetchRemoteSnapshot(supabase: SupabaseClient, userId: string): Promise<RemoteSnapshot> {
-  const [itemsRes, scheduleRes, attemptsRes, sessionsRes, preferencesRes] = await Promise.all([
-    supabase.from("learning_items").select("*").eq("user_id", userId),
-    supabase.from("schedule_states").select("*").eq("user_id", userId),
-    supabase.from("review_attempts").select("*").eq("user_id", userId),
-    supabase.from("study_sessions").select("*").eq("user_id", userId),
-    supabase.from("user_preferences").select("*").eq("user_id", userId),
-  ]);
-  if (itemsRes.error) throw new Error(itemsRes.error.message);
-  if (scheduleRes.error) throw new Error(scheduleRes.error.message);
-  if (attemptsRes.error) throw new Error(attemptsRes.error.message);
-  if (sessionsRes.error) throw new Error(sessionsRes.error.message);
-  if (preferencesRes.error) throw new Error(preferencesRes.error.message);
+  const [itemsRes, scheduleRes, attemptsRes, sessionsRes, preferencesRes] = await fetchStableSnapshot(supabase, () => Promise.all([
+    fetchAllRows((from, to) => supabase.from("learning_items").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+    fetchAllRows((from, to) => supabase.from("schedule_states").select("*").eq("user_id", userId).order("learning_item_id").order("ability").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+    fetchAllRows((from, to) => supabase.from("review_attempts").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+    fetchAllRows((from, to) => supabase.from("study_sessions").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+    fetchAllRows((from, to) => supabase.from("user_preferences").select("*").eq("user_id", userId).order("user_id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+  ]));
 
   return {
     items: (itemsRes.data ?? []) as LearningItemRow[],
@@ -416,6 +414,8 @@ let isRunning = false;
 export async function runInitialMigration(deps: MigrationDeps): Promise<MigrationStatus> {
   if (isRunning) return currentStatus;
   isRunning = true;
+  const generation = getAccountGeneration();
+  const assertCurrent = () => { if (generation !== getAccountGeneration()) throw new Error("帳戶已切換，遷移已停止；原資料仍保留。"); };
 
   try {
     if (isMigrationCompleted(deps.userId)) {
@@ -423,19 +423,20 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
       return currentStatus;
     }
 
-    const items = deps.repository.listItems();
+    const items = deps.repository.listItems({ includeArchived: true, includeReports: true });
     const scheduleStates = deps.repository.listScheduleStates();
     const reviewAttempts = deps.repository.listReviewAttempts();
     const studySessions = deps.repository.listStudySessions({ status: "all" });
     // 帳戶已經有雲端偏好時，以雲端值初始化這個裝置；避免新裝置的 10/10 預設反向覆蓋。
-    const preferences = await resolvePreferencesForMigration(deps.supabase, deps.userId);
+    const preferences = await withDataLock(() => resolvePreferencesForMigration(deps.supabase, deps.userId));
+    assertCurrent();
 
     const hasAnyLocalData =
       items.length > 0 || scheduleStates.length > 0 || reviewAttempts.length > 0 || studySessions.length > 0;
 
     if (!hasAnyLocalData) {
       // 沒有本機資料可遷移（例如全新使用者）：直接標記完成，避免每次登入都重新檢查一次。
-      markMigrationCompleted(deps.userId);
+      await withDataLock(() => { assertCurrent(); markMigrationCompleted(deps.userId); });
       setStatus({ phase: "not_needed" });
       return currentStatus;
     }
@@ -447,7 +448,7 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
       reviewAttempts,
       studySessions,
     };
-    backupLocalStore(manifest);
+    await withDataLock(() => { assertCurrent(); backupLocalStore(manifest); });
 
     // 批次 enqueue：items → sessions → attempts → scheduleStates。attempts 的 FK
     // 需要前兩者先存在；schedule 最後經 guarded RPC 寫入，遇到另一端已存在且不同就保留衝突。
@@ -458,6 +459,7 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
     const operations: OutboxOperation[] = [];
     for (const item of items) {
       operations.push({ type: "upsert_item", payload: learningItemToRow(item, deps.userId) });
+      if (item.archivedAt) operations.push({ type: "archive_items", payload: { ids: [item.id], archivedAt: item.archivedAt } });
     }
     for (const session of studySessions) {
       operations.push({ type: "upsert_session", payload: studySessionToRow(session, deps.userId) });
@@ -479,9 +481,9 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
     for (const schedule of scheduleStates) {
       operations.push({ type: "upsert_schedule_state", payload: scheduleStateToRow(schedule, deps.userId) });
     }
-    enqueueOutboxEntries(operations);
+    await withDataLock(() => { assertCurrent(); enqueueOutboxEntries(operations); });
     // 偏好沒有歷史語意；重試或連續點選時只保留最新值，不能一點就多一筆永久待送。
-    enqueueLatestPreferences(preferencesToRow(preferences, deps.userId));
+    await withDataLock(() => { assertCurrent(); enqueueLatestPreferences(preferencesToRow(preferences, deps.userId)); });
     const total = operations.length + 1;
     setStatus({ phase: "running", progress: { completed: 0, total } });
 
@@ -493,6 +495,7 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
       deps.userId
     );
 
+    assertCurrent();
     if (!drainResult.success) {
       setStatus({
         phase: "partial_failure",
@@ -504,9 +507,10 @@ export async function runInitialMigration(deps: MigrationDeps): Promise<Migratio
 
     const categories = await verifyMigration(deps.supabase, deps.userId, manifest, preferences);
 
+    assertCurrent();
     const allPassed = categories.every((category) => category.ok);
     if (allPassed) {
-      markMigrationCompleted(deps.userId);
+      await withDataLock(() => { assertCurrent(); markMigrationCompleted(deps.userId); });
       setStatus({ phase: "completed", categories });
     } else {
       setStatus({

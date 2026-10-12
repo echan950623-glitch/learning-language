@@ -12,13 +12,13 @@ import { __clearRebaseJournalForTests } from "./scheduleRebase";
 import { __resetSyncEngineForTests, drainOutboxFully } from "./syncEngine";
 
 try {
-  process.loadEnvFile(".env.local");
+  if (process.env.RUN_REAL_TESTS === "1") process.loadEnvFile(".env.local");
 } catch {
   // CI 沒有本機憑證時由 describe.skip 略過。
 }
 
 // 真實環境測試必須明確 opt-in，避免一般 `npm test` 每次都建立 Auth 暫存帳戶。
-const hasRealCredentials =
+const hasRealCredentials = process.env.RUN_REAL_TESTS === "1" &&
   process.env.RUN_REAL_SCHEDULE_REBASE_TEST === "1" &&
   (Boolean(process.env.SUPABASE_SECRET_KEY) || Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY));
 const describeReal = hasRealCredentials ? describe : describe.skip;
@@ -54,7 +54,7 @@ describeReal("schedule rebase（真實 Supabase 隔離帳戶）", () => {
   }, 30000);
 
   afterAll(async () => {
-    if (userId) await admin.auth.admin.deleteUser(userId);
+    if (userId) { const { error } = await admin.auth.admin.deleteUser(userId); if (error) throw new Error("Temporary schedule test account cleanup failed"); }
   }, 30000);
 
   it("以 canonical 雲端排程動態重算，真實 guarded RPC 寫入一次且清空原 entry", async () => {

@@ -16,6 +16,7 @@ import type { AbilityKind } from "./types";
 import { katakanaToHiragana, normalizeForComparison } from "./text";
 
 export interface GradeAttemptInput {
+  acceptedAnswers?: string[];
   ability: AbilityKind;
   /** 使用者實際輸入的原始文字，尚未做任何處理 */
   rawInput: string;
@@ -38,10 +39,10 @@ function normalizeForAbility(value: string, ability: AbilityKind): string {
 
 export function gradeAttempt(input: GradeAttemptInput): GradeAttemptResult {
   const normalizedInput = normalizeForAbility(input.rawInput, input.ability);
-  const normalizedExpected = normalizeForAbility(input.expectedAnswer, input.ability);
+  const normalizedExpected = [input.expectedAnswer, ...(input.acceptedAnswers ?? [])].map(answer => normalizeForAbility(answer, input.ability));
 
   return {
-    correct: normalizedInput.length > 0 && normalizedInput === normalizedExpected,
+    correct: normalizedInput.length > 0 && normalizedExpected.includes(normalizedInput),
     normalizedInput,
     expectedAnswer: input.expectedAnswer,
   };

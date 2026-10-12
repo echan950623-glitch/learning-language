@@ -48,6 +48,6 @@ describe("requiredAbilities", () => {
   });
 
   it("沒有讀音欄位的項目只需要 recall", () => {
-    expect(requiredAbilities(item({ answer: "hello", reading: undefined, language: "en" }))).toEqual(["recall"]);
+    expect(requiredAbilities(item({ answer: "hello", reading: undefined, language: "en" }))).toEqual([]); // Legacy English stays in the inbox until meaning questions are supplied.
   });
 });

@@ -404,14 +404,15 @@ describe("無損重放：本機空白副本已有 alias、雲端已有排程", (
     answer(newRepository(), "correct", T1);
     const original = storage.setItem.bind(storage);
     storage.setItem = (key: string, value: string) => {
-      if (key.includes("rebase-journal")) throw new DOMException("quota", "QuotaExceededError");
+      if (key.startsWith("learning-language:account:") && value.includes("rebase-journal")) throw new DOMException("quota", "QuotaExceededError");
       original(key, value);
     };
 
     const failed = await drainOutboxFully(asClient(createFakeSupabaseClient(db)), undefined, USER);
 
     expect(failed.success).toBe(false);
-    expect(failed.message).toContain("journal_write_failed");
+    // The encompassing account transaction may reject before reaching the journal.
+    expect(failed.message).toMatch(/quota|journal_write_failed/);
     expect(db.tables.review_attempts.rows).toHaveLength(0);
     expect(cloudSchedule(db)).toMatchObject({ streak: 2, last_reviewed_at: CLOUD_SCHEDULE.last_reviewed_at });
     const head = listOutboxEntries()[0];

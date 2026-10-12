@@ -7,6 +7,9 @@ import type {
   ScheduleState,
   StudySession,
   StudySessionPlannedUnit,
+  StudyMode,
+  DailyPlan,
+  LearningItemEdit,
 } from "../domain/types";
 import { combineAbilityStatuses, computeNextSchedule, deriveStatus, type SchedulePosition } from "../domain/srs";
 import { requiredAbilities } from "../domain/abilities";
@@ -21,8 +24,14 @@ import type {
   RepositoryDurability,
   StudySessionFilter,
 } from "./types";
-import type { PersistedStore } from "./schema";
+import { isDailyPlan, type PersistedStore } from "./schema";
 import { PersistenceFailedError } from "./errors";
+import { enqueueRetry, evidenceStatus, learningDay, scheduleEvidence, DEFAULT_LEARNING_TIME_ZONE, MIN_FRESH_RECALL_DELAY_MS } from "../domain/learningRules";
+import { accountStorage } from "./accountStorage";
+import { verificationState } from "../domain/automaticVerification";
+import { activeEnglishVariant, englishStatus, isEnglishPractice, freezeEnglishQuestion } from "../domain/englishPractice";
+import { freezeVocabularyVerification, vocabularyVerificationQuestions } from "../domain/verificationContexts";
+import { isLearningPractice, isCoachReport, isPracticeEligible, freezePracticeQuestion, spacePracticeUnits, recentlyExposed, canonicalJson, activePracticeVariant } from "../domain/learningPractice";
 
 /**
  * 共用的存取／變更邏輯。
@@ -48,6 +57,7 @@ import { PersistenceFailedError } from "./errors";
  * 呈現「這次沒有存到，請重試」，而不是靜默用舊資料覆蓋新資料。
  */
 export abstract class BaseLearningRepository implements LearningRepository {
+  private readonly ephemeralDeviceId = generateId("device");
   protected store: PersistedStore;
   abstract readonly durability: RepositoryDurability;
 
@@ -83,29 +93,11 @@ export abstract class BaseLearningRepository implements LearningRepository {
   }
 
   private cloneStore(): PersistedStore {
-    return {
-      schemaVersion: this.store.schemaVersion,
-      items: this.store.items.map((item) => ({ ...item, tags: [...item.tags] })),
-      scheduleStates: this.store.scheduleStates.map((s) => ({ ...s })),
-      reviewAttempts: this.store.reviewAttempts.map((a) => ({ ...a })),
-      studySessions: this.store.studySessions.map((s) => ({
-        ...s,
-        plannedUnits: s.plannedUnits.map((u) => ({ ...u })),
-        exerciseResults: s.exerciseResults.map((r) => ({ ...r })),
-        newItemIds: [...s.newItemIds],
-        reviewItemIds: [...s.reviewItemIds],
-      })),
-    };
+    return structuredClone(this.store);
   }
 
   private cloneSession(session: StudySession): StudySession {
-    return {
-      ...session,
-      plannedUnits: session.plannedUnits.map((u) => ({ ...u })),
-      exerciseResults: session.exerciseResults.map((r) => ({ ...r })),
-      newItemIds: [...session.newItemIds],
-      reviewItemIds: [...session.reviewItemIds],
-    };
+    return structuredClone(session);
   }
 
   // ---- LearningItem -------------------------------------------------------
@@ -114,15 +106,18 @@ export abstract class BaseLearningRepository implements LearningRepository {
     const items = filter?.language
       ? this.store.items.filter((item) => item.language === filter.language)
       : this.store.items;
-    return items.map((item) => ({ ...item, tags: [...item.tags] }));
+    return structuredClone(items.filter(item => (filter?.includeArchived || !item.archivedAt) && (filter?.includeReports || !item.coachReport)));
   }
 
   getItem(id: string): LearningItem | undefined {
     const item = this.store.items.find((i) => i.id === id);
-    return item ? { ...item, tags: [...item.tags] } : undefined;
+    return item ? structuredClone(item) : undefined;
   }
 
   private buildLearningItem(input: NewLearningItemInput, createdAt = nowIso()): LearningItem {
+    if (input.englishPractice && (!isEnglishPractice(input.englishPractice) || input.language !== "en" || !["vocabulary","phrase","collocation"].includes(input.type) || !input.partOfSpeech?.trim() || input.englishPractice.activeVariantId || input.englishPractice.variants.some(v => v.mode === "direct" && v.targetText.trim() !== input.answer.trim()))) throw new Error("英文練習內容不合法。");
+    if (input.practice && (!isLearningPractice(input.practice) || input.language !== "ja" || input.coachReport)) throw new Error("練習內容不合法。");
+    if (input.coachReport && (!isCoachReport(input.coachReport) || input.language !== "ja" || input.type !== "phrase" || input.practice)) throw new Error("教練摘要不合法。");
     const trimmedTags = input.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0);
     return {
       id: generateId("item"),
@@ -140,6 +135,14 @@ export abstract class BaseLearningRepository implements LearningRepository {
       status: "new",
       createdAt,
       isSeed: input.isSeed ?? false,
+      contentVersion: 1,
+      acceptedAnswers: input.acceptedAnswers?.map(answer => answer.trim()).filter(Boolean),
+      answerFormat: input.answerFormat,
+      ...(input.autoVerificationRequestedAt ? { autoVerificationRequestedAt: input.autoVerificationRequestedAt } : {}),
+      ...(input.reviewPaused !== undefined ? { reviewPaused: input.reviewPaused } : {}),
+      ...(input.englishPractice ? { englishPractice: structuredClone(input.englishPractice) } : {}),
+      ...(input.practice ? { practice: structuredClone(input.practice) } : {}),
+      ...(input.coachReport ? { coachReport: structuredClone(input.coachReport) } : {}),
     };
   }
 
@@ -150,6 +153,37 @@ export abstract class BaseLearningRepository implements LearningRepository {
     next.items.push(item);
     this.commit(next);
     return item;
+  }
+
+  editItem(id: string, expectedVersion: number, input: LearningItemEdit, now: Date): LearningItem {
+    const next = this.cloneStore();
+    const item = next.items.find(item => item.id === id);
+    if (!item || item.archivedAt || (item.contentVersion ?? 1) !== expectedVersion) throw new Error("單字版本已更新，請重新開啟編輯。");
+    if (!input.promptZh.trim() || !input.answer.trim()) throw new Error("詞義與答案不能是空白。");
+    if (input.englishPractice && (!isEnglishPractice(input.englishPractice) || item.language !== "en" || input.englishPractice.activeVariantId)) throw new Error("英文練習內容不合法。");
+    if (input.practice && !isLearningPractice(input.practice)) throw new Error("練習內容不合法。");
+    if (item.coachReport) throw new Error("教練摘要保留原始來源，不能當作單字編輯。");
+    const normalized = { ...input, promptZh: input.promptZh.trim(), answer: input.answer.trim(), reading: input.reading?.trim() || undefined,
+      acceptedAnswers: input.acceptedAnswers?.map(answer => answer.trim()).filter(Boolean), answerFormat: input.answerFormat ?? "vocabulary" as const };
+    if (item.englishPractice) {
+      normalized.partOfSpeech = input.partOfSpeech ?? item.partOfSpeech;
+      const content = input.englishPractice ?? item.englishPractice;
+      if (!normalized.partOfSpeech?.trim() || content.variants.some(v => v.mode === "direct" && v.targetText.trim() !== normalized.answer)) throw new Error("英文詞性與指定單字需和題目內容一致。");
+    }
+    const practiceChanged = input.practice && (canonicalJson(item.practice?.variants) !== canonicalJson(input.practice.variants) || item.practice?.capability !== input.practice.capability || item.practice?.conceptKey !== input.practice.conceptKey);
+    const major = (input.englishPractice && canonicalJson(item.englishPractice) !== canonicalJson(input.englishPractice)) || practiceChanged || item.promptZh !== normalized.promptZh || item.answer !== normalized.answer || item.reading !== normalized.reading ||
+      JSON.stringify(item.acceptedAnswers ?? []) !== JSON.stringify(normalized.acceptedAnswers ?? []) || (item.answerFormat ?? "vocabulary") !== normalized.answerFormat;
+    Object.assign(item, normalized, { contentVersion: expectedVersion + 1 });
+    if (major) {
+      item.autoVerificationRequestedAt = undefined;
+      item.needsUnderstanding = true;
+      for (const schedule of next.scheduleStates.filter(schedule => schedule.learningItemId === id)) Object.assign(schedule, {
+        dueAt: now.toISOString(), intervalDays: 1, streak: 0, ruleVersion: 2, evidenceStreak: 0, recentFailures: 0, lastEvidenceAt: undefined, lastPenaltySessionId: undefined,
+      });
+      item.status = item.introducedAt || next.scheduleStates.some(schedule => schedule.learningItemId === id) ? "learning" : "new";
+    }
+    this.commit(next);
+    return structuredClone(item);
   }
 
   addItemsIfMissing(inputs: NewLearningItemInput[]): LearningItem[] {
@@ -176,26 +210,20 @@ export abstract class BaseLearningRepository implements LearningRepository {
 
   removeItem(id: string): void {
     const next = this.cloneStore();
-    next.items = next.items.filter((item) => item.id !== id);
-    next.scheduleStates = next.scheduleStates.filter((s) => s.learningItemId !== id);
-    next.reviewAttempts = next.reviewAttempts.filter((a) => a.learningItemId !== id);
+    const item = next.items.find(item => item.id === id);
+    if (!item || item.archivedAt) return;
+    item.archivedAt = nowIso();
     this.commit(next);
   }
 
   removeSeedItems(language?: Language): number {
-    const idsToRemove = new Set(
-      this.store.items
-        .filter((item) => item.isSeed && (!language || item.language === language))
-        .map((item) => item.id)
-    );
-    if (idsToRemove.size === 0) return 0;
-
     const next = this.cloneStore();
-    next.items = next.items.filter((item) => !idsToRemove.has(item.id));
-    next.scheduleStates = next.scheduleStates.filter((s) => !idsToRemove.has(s.learningItemId));
-    next.reviewAttempts = next.reviewAttempts.filter((a) => !idsToRemove.has(a.learningItemId));
+    const targets = next.items.filter(item => item.isSeed && !item.archivedAt && (!language || item.language === language));
+    if (!targets.length) return 0;
+    const archivedAt = nowIso();
+    for (const item of targets) item.archivedAt = archivedAt;
     this.commit(next);
-    return idsToRemove.size;
+    return targets.length;
   }
 
   // ---- ScheduleState --------------------------------------------------------
@@ -220,7 +248,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
     const list = filter?.language
       ? this.store.reviewAttempts.filter((a) => a.language === filter.language)
       : this.store.reviewAttempts;
-    return list.map((a) => ({ ...a }));
+    return structuredClone(list);
   }
 
   // ---- StudySession -----------------------------------------------------
@@ -244,16 +272,18 @@ export abstract class BaseLearningRepository implements LearningRepository {
   }
 
   getInProgressSession(language: Language): StudySession | undefined {
-    const found = this.store.studySessions.find((s) => s.language === language && s.status === "in_progress");
+    const deviceId = typeof window === "undefined" ? this.ephemeralDeviceId : accountStorage().getItem("learning-language:device-id") ?? this.ephemeralDeviceId;
+    const found = this.store.studySessions.find((s) => s.language === language && s.status === "in_progress" && (s.ruleVersion !== 2 || !s.deviceId || s.deviceId === deviceId));
     return found ? this.cloneSession(found) : undefined;
   }
 
   getOrCreateInProgressSession(
     language: Language,
     plannedUnits: StudySessionPlannedUnit[],
-    now: Date
+    now: Date,
+    options?: { mode: StudyMode; dailyPlanId?: string; timeZone?: string }
   ): StudySession {
-    const existing = this.store.studySessions.find((s) => s.language === language && s.status === "in_progress");
+    const existing = this.getInProgressSession(language);
     if (existing) {
       // 已經有進行中的 session：題目順序在建立當下就固定了，忽略這次傳入的候選佇列，
       // 直接恢復既有 session，同一語言同時只會有一個 in_progress（R3 要求）。
@@ -275,22 +305,117 @@ export abstract class BaseLearningRepository implements LearningRepository {
           `getOrCreateInProgressSession: plannedUnits 內的 learningItemId "${unit.learningItemId}" 不存在，或語言與 session 的 "${language}" 不一致`
         );
       }
+      if (referencedItem.englishPractice && unit.ability !== "meaning") throw new Error("英文項目只能安排意思理解。");
+      if (!isPracticeEligible(referencedItem)) throw new Error("這個內容尚未確認學過、已暫停或不是作答項目。");
     }
 
     const dedupe = (ids: string[]): string[] => Array.from(new Set(ids));
+    let deviceId = this.ephemeralDeviceId;
+    if (options && typeof window !== "undefined") {
+      deviceId = accountStorage().getItem("learning-language:device-id") ?? deviceId;
+      accountStorage().setItem("learning-language:device-id", deviceId);
+    }
+    const exposedContent = new Set<string>();
+    const seenQuestions = [...this.store.reviewAttempts.map(a => a.abilityEvidence?.question), ...this.store.studySessions.flatMap(s => s.plannedUnits.map(u => u.itemSnapshot))].filter((q): q is LearningItem => !!q);
+    const frozenUnits = plannedUnits.map(u => {
+      if (!options) return { ...u };
+      const item = this.store.items.find(item => item.id === u.learningItemId)!;
+      const verifying = verificationState(item, u.ability, this.store.scheduleStates, this.store.reviewAttempts).stage !== "learning";
+      let itemSnapshot = item.englishPractice ? freezeEnglishQuestion(item, this.store.reviewAttempts, this.store.studySessions, verifying) : freezePracticeQuestion(item, this.store.reviewAttempts, exposedContent, verifying, seenQuestions);
+      if (verifying && !item.practice && !item.englishPractice) {
+        const seenKeys = new Set(seenQuestions.map(q => q.verificationQuestion?.key).filter((k): k is string => !!k));
+        for (const candidate of vocabularyVerificationQuestions(item, u.ability)) {
+          if (seenQuestions.some(q => [q.exampleSentence, q.explanation, q.promptZh].some(text => text?.includes(candidate.sentence) || text?.includes(candidate.sentence.replace("（　）", item.answer))))) seenKeys.add(candidate.key);
+        }
+        itemSnapshot = freezeVocabularyVerification(item, u.ability, seenKeys);
+      }
+      const key = activePracticeVariant(itemSnapshot)?.contentKey ?? (!item.practice ? `ja-word:${item.answer}:${item.reading ?? ""}` : undefined);
+      if (key) exposedContent.add(key);
+      return { ...structuredClone(u), attemptNumber: u.attemptNumber ?? 0, itemVersion: item.contentVersion ?? 1, itemSnapshot };
+    });
     const session: StudySession = {
       id: generateId("session"),
       language,
       status: "in_progress",
       startedAt: now.toISOString(),
-      plannedUnits: plannedUnits.map((u) => ({ ...u })),
+      plannedUnits: spacePracticeUnits(frozenUnits, this.store.items),
       exerciseResults: [],
       newItemIds: dedupe(plannedUnits.filter((u) => u.kind === "new").map((u) => u.learningItemId)),
       reviewItemIds: dedupe(plannedUnits.filter((u) => u.kind === "review").map((u) => u.learningItemId)),
+      ...(options ? { ruleVersion: 2 as const, mode: options.mode, dailyPlanId: options.dailyPlanId, deviceId,
+        timeZone: options.timeZone ?? DEFAULT_LEARNING_TIME_ZONE, understoodItemIds: [], hintedIndices: [] } : {}),
     };
 
     const next = this.cloneStore();
     next.studySessions.push(session);
+    this.commit(next);
+    return this.cloneSession(session);
+  }
+
+  listDailyPlans(): DailyPlan[] { return structuredClone(this.store.dailyPlans ?? []); }
+
+  saveDailyPlan(plan: DailyPlan): DailyPlan {
+    if (!isDailyPlan(plan) || plan.units.some(unit => !this.store.items.some(item => item.id === unit.learningItemId && item.language === plan.language)) ||
+      plan.newItemIds.some(id => !this.store.items.some(item => item.id === id && item.language === plan.language))) throw new Error("今日計畫的版本或內容關聯不完整。");
+    const next = this.cloneStore();
+    next.dailyPlans ??= [];
+    const index = next.dailyPlans.findIndex(candidate => candidate.id === plan.id);
+    if (index < 0) next.dailyPlans.push(structuredClone(plan));
+    else next.dailyPlans[index] = structuredClone(plan);
+    this.commit(next);
+    return structuredClone(plan);
+  }
+
+  acknowledgeIntroduction(sessionId: string, learningItemId: string, now: Date, alreadyKnown = false): StudySession {
+    const next = this.cloneStore();
+    const session = next.studySessions.find(candidate => candidate.id === sessionId);
+    const unit = session?.plannedUnits.find(unit => unit.learningItemId === learningItemId && unit.requiresIntroduction);
+    if (!session || session.status !== "in_progress" || unit?.learningItemId !== learningItemId || !unit.requiresIntroduction)
+      throw new Error("這張理解卡已經變更，請重新載入。");
+    if (session.understoodItemIds?.includes(learningItemId)) return this.cloneSession(session);
+    const plan = next.dailyPlans?.find(candidate => candidate.id === session.dailyPlanId);
+    const currentItem = next.items.find(candidate => candidate.id === learningItemId)!;
+    const currentVersion = (unit.itemVersion ?? 1) === (currentItem.contentVersion ?? 1);
+    if (!plan?.newItemIds.includes(learningItemId) && !(currentItem.needsUnderstanding && (currentItem.introducedAt || next.scheduleStates.some(schedule => schedule.learningItemId === learningItemId)))) throw new Error("這個新字尚未取得今日額度。");
+    session.understoodItemIds = [...(session.understoodItemIds ?? []), learningItemId];
+    const introductionCount = new Set(session.plannedUnits.filter(unit => unit.requiresIntroduction).map(unit => unit.learningItemId)).size;
+    if (!alreadyKnown && introductionCount < 4) {
+      for (const planned of session.plannedUnits.filter(unit => unit.learningItemId === learningItemId)) planned.recallNotBefore = new Date(now.getTime() + MIN_FRESH_RECALL_DELAY_MS).toISOString();
+    }
+    const item = next.items.find(candidate => candidate.id === learningItemId)!;
+    if (currentVersion) {
+      item.introducedAt ??= now.toISOString();
+      item.needsUnderstanding = false;
+    }
+    this.commit(next);
+    return this.cloneSession(session);
+  }
+
+  recordHint(sessionId: string, index: number): StudySession {
+    const next = this.cloneStore();
+    const session = next.studySessions.find(candidate => candidate.id === sessionId);
+    if (!session || session.status !== "in_progress" || index !== session.exerciseResults.length)
+      throw new Error("題目已經變更，提示沒有保存。");
+    if (session.hintedIndices?.includes(index)) return this.cloneSession(session);
+    session.hintedIndices = [...(session.hintedIndices ?? []), index];
+    this.commit(next);
+    return this.cloneSession(session);
+  }
+
+  skipVocabulary(sessionId: string, index: number, itemId: string, now: Date): StudySession {
+    const next = this.cloneStore();
+    const session = next.studySessions.find(candidate => candidate.id === sessionId);
+    const unit = session?.plannedUnits[index];
+    const item = unit?.itemSnapshot ?? next.items.find(candidate => candidate.id === itemId);
+    if (!session || session.status !== "in_progress" || index !== session.exerciseResults.length ||
+      unit?.learningItemId !== itemId || (item?.type !== "vocabulary" && !item?.englishPractice) || item.practice)
+      throw new Error("題目已經變更，沒有跳過其他題目，請重新載入。");
+    session.plannedUnits = session.plannedUnits.filter((planned, position) => position < index || planned.learningItemId !== itemId);
+    session.hintedIndices = (session.hintedIndices ?? []).filter(position => position < index);
+    if (session.plannedUnits.length === session.exerciseResults.length) {
+      session.status = "completed";
+      session.completedAt = now.toISOString();
+    }
     this.commit(next);
     return this.cloneSession(session);
   }
@@ -314,6 +439,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
     const next = this.cloneStore();
 
     const item = next.items.find((i) => i.id === input.learningItemId);
+    if (item?.coachReport) throw new Error("教練摘要是觀察，不是作答題目。請重新整理並更新 App。");
     if (!item) {
       throw new Error(`recordGradedAttempt: learningItemId "${input.learningItemId}" 不存在，無法評分`);
     }
@@ -360,6 +486,9 @@ export abstract class BaseLearningRepository implements LearningRepository {
       throw new Error(`recordGradedAttempt: exerciseId "${input.exerciseId}" 在這個 session 已經評分過`);
     }
 
+    if (session.ruleVersion === 2) return this.recordEvidence(next, session, item, expectedUnit, { ...input,
+      usedHint: input.usedHint || recentlyExposed(expectedUnit.itemSnapshot ?? item, next.reviewAttempts.filter(attempt => attempt.language === item.language), input.now) });
+
     const scheduleIndex = next.scheduleStates.findIndex(
       (s) => s.learningItemId === input.learningItemId && s.ability === input.ability
     );
@@ -386,7 +515,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
     }
 
     // R1：整體 item status 要看這個項目「所有必要能力」的狀態合併結果，不能只看剛作答的這項。
-    const abilityStatuses = requiredAbilities(item).map((ability) => {
+    const abilityStatuses = requiredAbilities({ ...item, reviewPaused: false }).map((ability) => {
       if (ability === input.ability) return computed.status;
       const other = next.scheduleStates.find((s) => s.learningItemId === item.id && s.ability === ability);
       return other ? deriveStatus(other.streak, other.lapseCount, true) : deriveStatus(0, 0, false);
@@ -434,6 +563,51 @@ export abstract class BaseLearningRepository implements LearningRepository {
     };
   }
 
+  private recordEvidence(next: PersistedStore, session: StudySession, item: LearningItem,
+    unit: StudySessionPlannedUnit, input: RecordGradedAttemptInput): RecordGradedAttemptResult {
+    const index = session.exerciseResults.length;
+    if (input.ability === "meaning") { const v = activeEnglishVariant(unit.itemSnapshot ?? item); const expected = v?.choices.find(c => c.id === v.correctChoiceId)?.text; if (!v || input.result !== ((input.rawAnswer ?? "") === expected ? "correct" : "incorrect")) throw new Error("英文答案與題目不一致。"); }
+    if (unit.requiresIntroduction && !session.understoodItemIds?.includes(item.id)) throw new Error("請先完成新字理解卡。");
+    if (unit.recallNotBefore && Date.parse(unit.recallNotBefore) > input.now.getTime()) throw new Error("理解內容已保存，稍後再做無提示回想。");
+    const previous = next.scheduleStates.find(state => state.learningItemId === item.id && state.ability === input.ability);
+    const usedHint = input.usedHint || !!session.hintedIndices?.includes(index);
+    const timeZone = session.timeZone ?? DEFAULT_LEARNING_TIME_ZONE;
+    const attemptNumber = unit.attemptNumber ?? 0;
+    const introduced = !!item.introducedAt || !!previous;
+    const versionCurrent = (unit.itemVersion ?? 1) === (item.contentVersion ?? 1);
+    const effectiveDue = verificationState(item, input.ability, next.scheduleStates, next.reviewAttempts).dueAt ?? previous?.dueAt;
+    const wasDue = versionCurrent && !!previous && !!effectiveDue && Date.parse(effectiveDue) <= input.now.getTime();
+    const computed = versionCurrent ? scheduleEvidence(previous, { result: input.result, usedHint, attemptNumber, introduced,
+      sessionId: session.id, timeZone, now: input.now, wasDue }) : previous;
+    const schedule = computed ? { ...computed, learningItemId: item.id, language: item.language, ability: input.ability } : undefined;
+    const scheduleIndex = next.scheduleStates.findIndex(state => state.learningItemId === item.id && state.ability === input.ability);
+    if (schedule) { if (scheduleIndex < 0) next.scheduleStates.push(schedule); else next.scheduleStates[scheduleIndex] = schedule; }
+    item.status = combineAbilityStatuses(requiredAbilities({ ...item, reviewPaused: false }).map(ability => evidenceStatus(next.scheduleStates.find(state => state.learningItemId === item.id && state.ability === ability))));
+    const attempt: ReviewAttempt = { id: generateId("attempt"), exerciseId: input.exerciseId, learningItemId: item.id,
+      language: item.language, exerciseType: input.exerciseType, sessionId: session.id, result: input.result, usedHint,
+      responseTimeMs: input.responseTimeMs, reviewedAt: input.now.toISOString(), abilityEvidence: {
+        ruleVersion: 2, mode: session.mode ?? "today", attemptNumber, wasDue,
+        introduced, day: learningDay(input.now, timeZone), timeZone, rawAnswer: input.rawAnswer ?? "", normalizedAnswer: input.normalizedAnswer ?? "",
+        originalResult: input.result, question: structuredClone(unit.itemSnapshot ?? item), beforeSchedule: previous ? structuredClone(previous) : null, corrections: [],
+      } };
+    next.reviewAttempts.push(attempt);
+    if (item.englishPractice) item.status = englishStatus(item, next.scheduleStates, next.reviewAttempts);
+    session.exerciseResults.push({ exerciseId: attempt.exerciseId, learningItemId: item.id, exerciseType: input.exerciseType,
+      result: input.result, usedHint, responseTimeMs: input.responseTimeMs, attemptNumber });
+    session.plannedUnits = enqueueRetry(session.plannedUnits, index, input.result, usedHint);
+    const plan = next.dailyPlans?.find(candidate => candidate.id === session.dailyPlanId);
+    if (plan && attemptNumber === 0) {
+      plan.completedUnitKeys = [...new Set([...plan.completedUnitKeys, `${item.id}:${input.ability}`])];
+      plan.updatedAt = input.now.toISOString();
+    }
+    if (session.exerciseResults.length >= session.plannedUnits.length) { session.status = "completed"; session.completedAt = input.now.toISOString(); }
+    this.commit(next);
+    // Unenrolled practice returns a display-only position; it is never saved as a schedule.
+    return { schedule: schedule ?? { learningItemId: item.id, language: item.language, ability: input.ability,
+      dueAt: input.now.toISOString(), intervalDays: 1, streak: 0, lapseCount: 0 }, itemStatus: item.status,
+      attempt: structuredClone(attempt), session: this.cloneSession(session) };
+  }
+
   // ---- 「我其實答對了」修正（原地改判，不新增第二筆 attempt） ----------------------
 
   markAttemptCorrect(input: MarkAttemptCorrectInput): RecordGradedAttemptResult {
@@ -461,6 +635,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
       throw new Error(`markAttemptCorrect: 找不到 exerciseId "${input.exerciseId}" 對應的作答紀錄`);
     }
     const attempt = next.reviewAttempts[attemptIndex];
+    if (attempt.exerciseType === "meaning") throw new Error("英文辨義依固定選項判分，不能將錯誤選項改為答對。");
 
     const item = next.items.find((i) => i.id === attempt.learningItemId);
     if (!item) {
@@ -479,13 +654,13 @@ export abstract class BaseLearningRepository implements LearningRepository {
       const currentSchedule = next.scheduleStates.find(
         (s) => s.learningItemId === attempt.learningItemId && s.ability === ability
       );
-      if (!currentSchedule) {
+      if (!currentSchedule && !attempt.abilityEvidence) {
         throw new Error(
           `markAttemptCorrect: learningItemId "${attempt.learningItemId}" 的 "${ability}" 排程狀態不存在，資料不一致`
         );
       }
       return {
-        schedule: { ...currentSchedule },
+        schedule: currentSchedule ? { ...currentSchedule } : { learningItemId: item.id, language: item.language, ability, dueAt: attempt.reviewedAt, intervalDays: 1, streak: 0, lapseCount: 0 },
         itemStatus: item.status,
         attempt: { ...attempt },
         session: this.cloneSession(session),
@@ -509,6 +684,28 @@ export abstract class BaseLearningRepository implements LearningRepository {
       throw new Error(
         `markAttemptCorrect: learningItemId "${attempt.learningItemId}" 的 "${ability}" 能力在這筆之後已經有更新的作答紀錄，修正會讓目前排程倒退，已拒絕`
       );
+    }
+
+    if (attempt.abilityEvidence) {
+      const evidence = attempt.abilityEvidence;
+      const computed = (evidence.question.contentVersion ?? 1) !== (item.contentVersion ?? 1)
+        ? next.scheduleStates.find(state => state.learningItemId === item.id && state.ability === ability)
+        : scheduleEvidence(evidence.beforeSchedule ?? undefined, { result: "correct", usedHint: attempt.usedHint,
+        attemptNumber: evidence.attemptNumber, introduced: evidence.introduced, sessionId: session.id,
+        timeZone: evidence.timeZone, now: new Date(attempt.reviewedAt) });
+      const schedule = computed ? { ...computed, learningItemId: item.id, language: item.language, ability } : undefined;
+      const scheduleIndex = next.scheduleStates.findIndex(state => state.learningItemId === item.id && state.ability === ability);
+      if (schedule) { if (scheduleIndex < 0) next.scheduleStates.push(schedule); else next.scheduleStates[scheduleIndex] = schedule; }
+      attempt.result = "correct";
+      evidence.corrections.push({ id: generateId("correction"), correctedAt: nowIso(), result: "correct" });
+      session.exerciseResults[session.exerciseResults.length - 1].result = "correct";
+      session.plannedUnits = session.plannedUnits.filter((unit, index) => index < session.exerciseResults.length ||
+        !(unit.learningItemId === item.id && unit.ability === ability && (unit.attemptNumber ?? 0) === evidence.attemptNumber + 1));
+      if (session.exerciseResults.length === session.plannedUnits.length) { session.status = "completed"; session.completedAt = attempt.reviewedAt; }
+      item.status = combineAbilityStatuses(requiredAbilities({ ...item, reviewPaused: false }).map(kind => evidenceStatus(next.scheduleStates.find(state => state.learningItemId === item.id && state.ability === kind))));
+      this.commit(next);
+      return { schedule: schedule ?? { learningItemId: item.id, language: item.language, ability, dueAt: attempt.reviewedAt, intervalDays: 1, streak: 0, lapseCount: 0 }, itemStatus: item.status,
+        attempt: structuredClone(attempt), session: this.cloneSession(session) };
     }
 
     // 重新推導排程：把這個 (item, ability) 在這筆之前的作答序列（按寫入順序，也就是
@@ -543,7 +740,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
       next.scheduleStates.push(nextSchedule);
     }
 
-    const abilityStatuses = requiredAbilities(item).map((a) => {
+    const abilityStatuses = requiredAbilities({ ...item, reviewPaused: false }).map((a) => {
       if (a === ability) return computed.status;
       const other = next.scheduleStates.find((s) => s.learningItemId === item.id && s.ability === a);
       return other ? deriveStatus(other.streak, other.lapseCount, true) : deriveStatus(0, 0, false);

@@ -8,14 +8,15 @@ interface RowWithContentKey extends LearningItemRow {
   content_key: string;
 }
 
-function fakeSupabase(rows: RowWithContentKey[], totalCountOverride?: number): SupabaseClient {
+function fakeSupabase(rows: RowWithContentKey[]): SupabaseClient {
   return {
+    rpc: async () => ({ data: "0", error: null }),
     from(table: string) {
       if (table !== "learning_items") throw new Error(`未預期的 table: ${table}`);
       return {
         select(_columns: string, opts?: { count?: string; head?: boolean }) {
           if (opts?.head) {
-            return Promise.resolve({ data: null, error: null, count: totalCountOverride ?? rows.length });
+            return Promise.resolve({ data: null, error: null, count: rows.length });
           }
           const builder = {
             order() {
@@ -24,6 +25,7 @@ function fakeSupabase(rows: RowWithContentKey[], totalCountOverride?: number): S
             limit(n: number) {
               return Promise.resolve({ data: rows.slice(0, n), error: null });
             },
+            range(from: number, to: number) { return Promise.resolve({ data: rows.slice(from, to + 1), error: null }); },
           };
           return builder;
         },
@@ -94,16 +96,16 @@ describe("get_vocabulary_inventory handler", () => {
   });
 
   it("totalCount 大於實際回傳筆數時 truncated 為 true", async () => {
-    const rows: RowWithContentKey[] = [makeRow({ id: "item_1" })];
-    const result = await handler(fakeSupabase(rows, 999), { limit: 1 });
+    const rows = Array.from({ length: 1007 }, (_, i) => makeRow({ id: `item_${i}` }));
+    const result = await handler(fakeSupabase(rows), { limit: 1 });
 
-    expect(result.totalCount).toBe(999);
+    expect(result.totalCount).toBe(1007);
     expect(result.returnedCount).toBe(1);
     expect(result.truncated).toBe(true);
   });
 
   it("沒有任何單字時回傳全空的安全預設值", async () => {
-    const result = await handler(fakeSupabase([], 0), { limit: 500 });
+    const result = await handler(fakeSupabase([]), { limit: 500 });
 
     expect(result).toMatchObject({
       totalCount: 0,

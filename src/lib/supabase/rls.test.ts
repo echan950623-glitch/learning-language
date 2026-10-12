@@ -20,12 +20,12 @@ import { createAdminClient } from "./admin";
 import type { Database, Json } from "./database.types";
 
 try {
-  process.loadEnvFile(".env.local");
+  if (process.env.RUN_REAL_TESTS === "1") process.loadEnvFile(".env.local");
 } catch {
   // 沒有 .env.local（例如 CI）時忽略，下面用 SUPABASE_SECRET_KEY 是否存在決定要不要 skip。
 }
 
-const hasRealCredentials = Boolean(process.env.SUPABASE_SECRET_KEY) || Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+const hasRealCredentials = process.env.RUN_REAL_TESTS === "1" && (Boolean(process.env.SUPABASE_SECRET_KEY) || Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY));
 const describeWithRealDb = hasRealCredentials ? describe : describe.skip;
 
 if (!hasRealCredentials) {

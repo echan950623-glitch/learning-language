@@ -25,10 +25,15 @@ import type {
   ScheduleState,
   StudySession,
   StudySessionPlannedUnit,
+  StudyMode,
+  DailyPlan,
+  LearningItemEdit,
 } from "../domain/types";
 import type { AttemptResult, ExerciseType, ItemStatus } from "../domain/types";
 
 export interface LanguageFilter {
+  includeReports?: boolean;
+  includeArchived?: boolean;
   language?: Language;
 }
 
@@ -39,6 +44,8 @@ export interface StudySessionFilter extends LanguageFilter {
 }
 
 export interface RecordGradedAttemptInput {
+  rawAnswer?: string;
+  normalizedAnswer?: string;
   sessionId: string;
   learningItemId: string;
   ability: AbilityKind;
@@ -72,6 +79,7 @@ export interface LearningRepository {
   listItems(filter?: LanguageFilter): LearningItem[];
   getItem(id: string): LearningItem | undefined;
   addItem(input: NewLearningItemInput): LearningItem;
+  editItem(id: string, expectedVersion: number, input: LearningItemEdit, now: Date): LearningItem;
   /** 以內容去重後原子加入整批項目；全部已存在時不寫入並回傳空陣列。 */
   addItemsIfMissing(inputs: NewLearningItemInput[]): LearningItem[];
   removeItem(id: string): void;
@@ -91,7 +99,13 @@ export interface LearningRepository {
    * 就已經固定）；沒有的話用傳入的 plannedUnits 建立一個新的並立即保存為 in_progress。
    * 同一語言同時只會有一個 in_progress session。
    */
-  getOrCreateInProgressSession(language: Language, plannedUnits: StudySessionPlannedUnit[], now: Date): StudySession;
+  getOrCreateInProgressSession(language: Language, plannedUnits: StudySessionPlannedUnit[], now: Date, options?: { mode: StudyMode; dailyPlanId?: string; timeZone?: string }): StudySession;
+  listDailyPlans(): DailyPlan[];
+  saveDailyPlan(plan: DailyPlan): DailyPlan;
+  acknowledgeIntroduction(sessionId: string, learningItemId: string, now: Date, alreadyKnown?: boolean): StudySession;
+  recordHint(sessionId: string, index: number): StudySession;
+  /** Skip this vocabulary item in the remaining round without recording an answer or changing SRS. */
+  skipVocabulary(sessionId: string, index: number, itemId: string, now: Date): StudySession;
   /**
    * 評分一題：計算下一個排程、更新該項目狀態、新增一筆 ReviewAttempt、更新對應 session
    * 的 exerciseResults；全部在同一次原子寫入內完成。若這一題剛好是 session 的最後一題，

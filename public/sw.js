@@ -12,8 +12,10 @@
 // - 只在 activate 時刪除自己命名規則（CACHE_PREFIX）下的舊版本快取，不動其他快取，
 //   也完全不碰 localStorage／IndexedDB（service worker 本來就無法直接存取這兩者）。
 const CACHE_PREFIX = "learning-language-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v18`;
-const APP_SHELL = ["/", "/manifest.webmanifest"];
+const CACHE_NAME = `${CACHE_PREFIX}v30`;
+// Build output confirms these are public static shells; learning/auth data stays in repositories.
+const PAGE_SHELLS = ["/", "/add", "/study", "/review", "/progress", "/settings", "/practice"];
+const APP_SHELL = [...PAGE_SHELLS, "/manifest.webmanifest"];
 const PRECACHE_ASSETS = ["/manifest.webmanifest"];
 
 const BYPASS_EXACT_PATHS = ["/auth", "/api", "/oauth", "/mcp"];
@@ -84,6 +86,23 @@ self.addEventListener("install", (event) => {
           const response = await fetch(path);
           if (isSafeFinalResponse(path, response)) await cache.put(path, response.clone());
         }
+        // Credential-free warmup makes a saved study usable after reopening offline.
+        // Cache each page independently; one missing page must not cancel the others.
+        await Promise.all(PAGE_SHELLS.map(async (path) => {
+          try {
+            const response = await fetch(path, { credentials: "omit" });
+            if (!isSafeFinalResponse(path, response)) return;
+            const html = await response.clone().text();
+            await cache.put(path, response);
+            const assets = new Set(Array.from(html.matchAll(/(?:src|href)="(\/_next\/static\/[^"?#]+)"/g), match => match[1]));
+            await Promise.all(Array.from(assets, async (asset) => {
+              try {
+                const resource = await fetch(asset, { credentials: "omit" });
+                if (isSafeFinalResponse(asset, resource)) await cache.put(asset, resource);
+              } catch { /* Keep the shell; a later online visit can fill a missing asset. */ }
+            }));
+          } catch { /* A failed warmup does not delete the prior durable learning data. */ }
+        }));
       })
       .catch((error) => {
         // 首次安裝時若離線導致快取失敗，不阻擋 service worker 安裝
@@ -114,10 +133,10 @@ self.addEventListener("activate", (event) => {
 async function handleNavigation(request, url) {
   try {
     const response = await fetch(request);
-    if (url.pathname === "/" && url.search === "" && isSafeFinalResponse(request, response)) {
+    if (PAGE_SHELLS.includes(url.pathname) && url.search === "" && isSafeFinalResponse(request, response)) {
       try {
         const cache = await caches.open(CACHE_NAME);
-        await cache.put("/", response.clone());
+        await cache.put(url.pathname, response.clone());
       } catch (cacheError) {
         logError("更新 app shell 快取", cacheError);
       }
@@ -126,7 +145,7 @@ async function handleNavigation(request, url) {
   } catch {
     try {
       const cache = await caches.open(CACHE_NAME);
-      const shell = await cache.match("/");
+      const shell = PAGE_SHELLS.includes(url.pathname) ? await cache.match(url.pathname) : undefined;
       if (shell) return shell;
     } catch (fallbackError) {
       logError("離線回退讀取 app shell 快取", fallbackError);

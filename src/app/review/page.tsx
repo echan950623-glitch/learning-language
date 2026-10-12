@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { buildFullReviewUnits, buildWrongAnswerUnits } from "@/domain/practice";
 import type { StudySessionPlannedUnit } from "@/domain/types";
 import { readStudyQuestionCount } from "@/lib/studyPreferences";
-import { describePersistenceError, getRepository } from "@/repository";
+import { describePersistenceError, getRepository, mutateRepository, subscribeDataChanged } from "@/repository";
 
 interface ReviewData {
   wrongUnits: StudySessionPlannedUnit[];
@@ -26,6 +26,7 @@ export default function ReviewPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const refresh = () => {
     const repository = getRepository();
     const items = repository.listItems({ language: "ja" });
     const attempts = repository.listReviewAttempts({ language: "ja" });
@@ -38,9 +39,12 @@ export default function ReviewPage() {
       questionCount: readStudyQuestionCount(),
       hasInProgressSession: Boolean(repository.getInProgressSession("ja")),
     });
+    };
+    refresh();
+    return subscribeDataChanged(refresh);
   }, []);
 
-  function startReview(mode: ReviewMode) {
+  async function startReview(mode: ReviewMode) {
     if (!data || data.hasInProgressSession) return;
 
     const availableUnits = mode === "wrong" ? data.wrongUnits : data.fullUnits;
@@ -50,7 +54,7 @@ export default function ReviewPage() {
     setStartingMode(mode);
     setError(null);
     try {
-      getRepository().getOrCreateInProgressSession("ja", plannedUnits, new Date());
+      await mutateRepository(repository => repository.getOrCreateInProgressSession("ja", plannedUnits, new Date(), { mode }));
       router.push("/study");
     } catch (caught) {
       setError(describePersistenceError(caught));

@@ -4,6 +4,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { englishContentSchema } from "./englishContentSchema";
 
 import { validateVocabularyBatch, vocabularyBatchItemInputSchema } from "./vocabularyBatchShared";
 
@@ -34,6 +35,7 @@ const validItemOutputSchema = z.object({
   romaji: z.string().optional(),
   partOfSpeech: z.string().optional(),
   exampleSentence: z.string().optional(),
+  englishPractice: englishContentSchema.optional(),
   tags: z.array(z.string()),
   language: z.enum(["ja", "en"]),
   type: z.enum(["vocabulary", "grammar", "phrase", "collocation"]),
@@ -76,6 +78,7 @@ export async function handler(
       romaji: item.romaji,
       partOfSpeech: item.partOfSpeech,
       exampleSentence: item.exampleSentence,
+      englishPractice: item.englishPractice,
       tags: item.tags,
       language: item.language,
       type: item.type,

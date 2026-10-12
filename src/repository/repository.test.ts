@@ -1,3 +1,4 @@
+import { accountStorage } from "./accountStorage";
 import { beforeEach, describe, expect, it } from "vitest";
 import { installMockLocalStorage, type MemoryStorage } from "../test/localStorageMock";
 import { LocalStorageLearningRepository } from "./localStorageRepository";
@@ -461,11 +462,10 @@ describe("LocalStorageLearningRepository — 持久化與安全 fallback", () =>
     installMockLocalStorage();
   });
 
-  it("首次啟動（無存檔）會注入範例種子資料", () => {
+  it("首次啟動不自動新增內容，等待 MCP 確認加入", () => {
     const repo = new LocalStorageLearningRepository();
     const items = repo.listItems({ language: "ja" });
-    expect(items.length).toBeGreaterThan(0);
-    expect(items.every((item) => item.isSeed)).toBe(true);
+    expect(items).toEqual([]);
   });
 
   it("新增項目後，用新的 repository 實例重新讀取（模擬重新整理）仍然存在", () => {
@@ -483,7 +483,7 @@ describe("LocalStorageLearningRepository — 持久化與安全 fallback", () =>
     expect(() => new LocalStorageLearningRepository()).not.toThrow();
     const repo = new LocalStorageLearningRepository();
     expect(repo.listItems()).toEqual([]);
-    expect(window.localStorage.getItem(`${STORAGE_KEY}:corrupt-backup`)).toBe("{not valid json");
+    expect(accountStorage().getItem(`${STORAGE_KEY}:corrupt-backup`)).toBe("{not valid json");
   });
 
   it("localStorage 內容 schemaVersion 不符（含未來版本）時安全回退為空白狀態", () => {

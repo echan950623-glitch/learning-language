@@ -34,6 +34,18 @@ export type ItemSource = "ai" | "textbook" | "teacher" | "song" | "manual";
 export type ItemStatus = "new" | "learning" | "mastered" | "struggling";
 
 export interface LearningItem {
+  /** 暫停出題，保留原本的學習紀錄與排程。 */
+  englishPractice?: import("./englishPractice").EnglishPractice;
+  autoVerificationRequestedAt?: string;
+  verificationQuestion?: { key: string; kind: "context" | "retention" | "parallel"; novel: boolean; basePrompt: string };
+  reviewPaused?: boolean;
+  practice?: import("./learningPractice").LearningPractice;
+  coachReport?: import("./learningPractice").CoachReport;
+  answerFormat?: "vocabulary" | "kanji";
+  needsUnderstanding?: boolean;
+  contentVersion?: number;
+  acceptedAnswers?: string[];
+  introducedAt?: string;
   id: string;
   language: Language;
   type: ItemType;
@@ -61,15 +73,17 @@ export interface LearningItem {
   createdAt: string;
   /** true 代表這是系統提供的範例內容，不是使用者真實學習資料 */
   isSeed: boolean;
+  /** Tombstone: content and all progress remain available to existing sessions. */
+  archivedAt?: string;
 }
 
-export type ExerciseType = "recall" | "reading" | "spelling" | "translation";
+export type ExerciseType = "recall" | "reading" | "meaning" | "spelling" | "translation";
 
 /**
  * 單字目前實際會被排程的「能力」子集合。之後 grammar/phrase/collocation 或英文拼字題
  * 需要更多能力種類時，在這裡擴充，不影響既有 recall/reading 的行為。
  */
-export type AbilityKind = Extract<ExerciseType, "recall" | "reading">;
+export type AbilityKind = Extract<ExerciseType, "recall" | "reading" | "meaning">;
 
 export interface Exercise {
   id: string;
@@ -84,6 +98,7 @@ export interface Exercise {
 export type AttemptResult = "correct" | "partial" | "incorrect";
 
 export interface ReviewAttempt {
+  abilityEvidence?: AttemptEvidence;
   id: string;
   exerciseId: string;
   /** 冗餘存主要作答對象，方便直接依項目／語言查詢，不用每次 join Exercise */
@@ -104,6 +119,11 @@ export interface ReviewAttempt {
  * `requiredAbilities()` 判斷該項目需要獨立讀音練習時才會建立）。
  */
 export interface ScheduleState {
+  ruleVersion?: 2;
+  evidenceStreak?: number;
+  lastEvidenceAt?: string;
+  recentFailures?: number;
+  lastPenaltySessionId?: string;
   learningItemId: string;
   ability: AbilityKind;
   language: Language;
@@ -120,6 +140,7 @@ export interface ScheduleState {
 }
 
 export interface StudySessionExerciseResult {
+  attemptNumber?: number;
   exerciseId: string;
   learningItemId: string;
   exerciseType: ExerciseType;
@@ -130,6 +151,11 @@ export interface StudySessionExerciseResult {
 
 /** session 建立當下就決定好的固定題目順序，重新整理後靠這個恢復，不重新排序。 */
 export interface StudySessionPlannedUnit {
+  recallNotBefore?: string;
+  attemptNumber?: number;
+  requiresIntroduction?: boolean;
+  itemVersion?: number;
+  itemSnapshot?: LearningItem;
   learningItemId: string;
   ability: AbilityKind;
   kind: "review" | "new";
@@ -138,6 +164,13 @@ export interface StudySessionPlannedUnit {
 export type StudySessionStatus = "in_progress" | "completed" | "abandoned";
 
 export interface StudySession {
+  deviceId?: string;
+  ruleVersion?: 2;
+  mode?: StudyMode;
+  timeZone?: string;
+  dailyPlanId?: string;
+  understoodItemIds?: string[];
+  hintedIndices?: number[];
   id: string;
   language: Language;
   status: StudySessionStatus;
@@ -157,6 +190,13 @@ export interface StudySession {
 
 /** 新增學習項目時的輸入型別；id／status／createdAt 由 repository 產生 */
 export interface NewLearningItemInput {
+  englishPractice?: import("./englishPractice").EnglishPractice;
+  autoVerificationRequestedAt?: string;
+  reviewPaused?: boolean;
+  practice?: import("./learningPractice").LearningPractice;
+  coachReport?: import("./learningPractice").CoachReport;
+  answerFormat?: "vocabulary" | "kanji";
+  acceptedAnswers?: string[];
   language: Language;
   type: ItemType;
   promptZh: string;
@@ -169,4 +209,38 @@ export interface NewLearningItemInput {
   source: ItemSource;
   tags: string[];
   isSeed?: boolean;
+}
+
+export type LearningItemEdit = Pick<NewLearningItemInput, "promptZh" | "answer" | "reading" | "explanation" | "partOfSpeech" | "exampleSentence" | "acceptedAnswers" | "answerFormat" | "practice" | "englishPractice" | "reviewPaused" | "autoVerificationRequestedAt">;
+
+export type StudyMode = "today" | "wrong" | "full" | "random";
+export interface AttemptEvidence {
+  ruleVersion: 2;
+  mode: StudyMode;
+  attemptNumber: number;
+  wasDue: boolean;
+  introduced: boolean;
+  day: string;
+  timeZone: string;
+  rawAnswer: string;
+  normalizedAnswer: string;
+  originalResult: AttemptResult;
+  question: LearningItem;
+  beforeSchedule: ScheduleState | null;
+  corrections: { id: string; correctedAt: string; result: AttemptResult }[];
+}
+export interface DailyPlan {
+  reservationOwner?: string;
+  id: string;
+  date: string;
+  language: Language;
+  timeZone: string;
+  ruleVersion: 2;
+  newItemCap: number;
+  newItemIds: string[];
+  units: StudySessionPlannedUnit[];
+  completedUnitKeys: string[];
+  reason: string;
+  busy: boolean;
+  updatedAt: string;
 }

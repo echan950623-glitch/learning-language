@@ -1,3 +1,4 @@
+import { accountStorage } from "../accountStorage";
 /**
  * 離線優先同步的核心資料結構：outbox（待送佇列）。
  *
@@ -25,6 +26,8 @@ import type {
   StudySession,
   StudySessionPlannedUnit,
   StudySessionStatus,
+  DailyPlan,
+  AttemptEvidence,
 } from "../../domain/types";
 import { generateId } from "../../domain/id";
 import { nowIso } from "../../domain/time";
@@ -36,6 +39,7 @@ export const OUTBOX_STORAGE_KEY = "learning-language:sync-outbox";
 // ---------------------------------------------------------------------------
 
 export interface LearningItemRow {
+  learning_metadata?: Pick<LearningItem, "contentVersion" | "acceptedAnswers" | "introducedAt" | "answerFormat" | "needsUnderstanding" | "practice" | "englishPractice" | "coachReport" | "reviewPaused" | "autoVerificationRequestedAt">;
   id: string;
   user_id: string;
   language: Language;
@@ -52,9 +56,11 @@ export interface LearningItemRow {
   status: ItemStatus;
   created_at: string;
   is_seed: boolean;
+  archived_at?: string | null;
 }
 
 export interface ScheduleStateRow {
+  learning_metadata?: Pick<ScheduleState, "ruleVersion" | "evidenceStreak" | "lastEvidenceAt" | "recentFailures" | "lastPenaltySessionId">;
   user_id: string;
   learning_item_id: string;
   ability: AbilityKind;
@@ -67,6 +73,7 @@ export interface ScheduleStateRow {
 }
 
 export interface StudySessionRow {
+  learning_metadata?: Pick<StudySession, "ruleVersion" | "mode" | "timeZone" | "dailyPlanId" | "understoodItemIds" | "hintedIndices" | "deviceId">;
   id: string;
   user_id: string;
   language: Language;
@@ -80,6 +87,7 @@ export interface StudySessionRow {
 
 /** `review_attempts` 的 guarded migration RPC payload；一般作答走評分／修正 RPC。 */
 export interface ReviewAttemptRow {
+  learning_metadata?: AttemptEvidence;
   id: string;
   user_id: string;
   session_id: string;
@@ -98,6 +106,22 @@ export interface UserPreferencesRow {
   user_id: string;
   daily_question_count: number;
   daily_new_item_cap: number;
+}
+
+export interface LearningEventPayload {
+  replayAttemptIds?: string[];
+  id: string;
+  kind: "plan" | "introduction" | "hint" | "attempt" | "correction" | "edit" | "skip";
+  beforeItem?: LearningItemRow;
+  beforeSchedules?: ScheduleStateRow[];
+  schedules?: ScheduleStateRow[];
+  beforeSession?: StudySessionRow;
+  session?: StudySessionRow;
+  plan?: DailyPlan;
+  item?: LearningItemRow;
+  attempt?: ReviewAttemptRow;
+  beforeSchedule?: ScheduleStateRow | null;
+  schedule?: ScheduleStateRow | null;
 }
 
 export interface RecordGradedAttemptRpcInput {
@@ -152,7 +176,9 @@ export interface ExpectedScheduleState {
 // ---------------------------------------------------------------------------
 
 export type OutboxOperation =
+  | { type: "learning_event"; payload: LearningEventPayload }
   | { type: "upsert_item"; payload: LearningItemRow } // guarded RPC
+  | { type: "archive_items"; payload: { ids: string[]; archivedAt: string } }
   | { type: "delete_items"; payload: { ids: string[] } } // guarded RPC
   | { type: "upsert_schedule_state"; payload: ScheduleStateRow } // guarded RPC；僅 migration／初始匯入
   | { type: "upsert_session"; payload: StudySessionRow } // guarded RPC（建立／恢復 in_progress）
@@ -175,7 +201,9 @@ export type OutboxEntry = OutboxOperation & {
 };
 
 const OUTBOX_OPERATION_TYPES: readonly OutboxOperationType[] = [
+  "learning_event",
   "upsert_item",
+  "archive_items",
   "delete_items",
   "upsert_schedule_state",
   "upsert_session",
@@ -217,6 +245,7 @@ function toIsoInstantOrUndefined(value: string | null): string | undefined {
 
 export function learningItemToRow(item: LearningItem, userId: string): LearningItemRow {
   return {
+    ...(item.contentVersion || item.introducedAt || item.acceptedAnswers || item.practice || item.englishPractice || item.coachReport || item.reviewPaused !== undefined || item.autoVerificationRequestedAt ? { learning_metadata: { contentVersion: item.contentVersion, acceptedAnswers: item.acceptedAnswers, introducedAt: item.introducedAt, answerFormat: item.answerFormat, needsUnderstanding: item.needsUnderstanding, reviewPaused: item.reviewPaused, autoVerificationRequestedAt: item.autoVerificationRequestedAt, practice: structuredClone(item.practice), englishPractice: structuredClone(item.englishPractice), coachReport: structuredClone(item.coachReport) } } : {}),
     id: item.id,
     user_id: userId,
     language: item.language,
@@ -233,11 +262,13 @@ export function learningItemToRow(item: LearningItem, userId: string): LearningI
     status: item.status,
     created_at: item.createdAt,
     is_seed: item.isSeed,
+    ...(item.archivedAt ? { archived_at: item.archivedAt } : {}),
   };
 }
 
 export function rowToLearningItem(row: LearningItemRow): LearningItem {
   return {
+    ...structuredClone(row.learning_metadata ?? {}),
     id: row.id,
     language: row.language,
     type: row.type,
@@ -253,11 +284,13 @@ export function rowToLearningItem(row: LearningItemRow): LearningItem {
     status: row.status,
     createdAt: toIsoInstant(row.created_at),
     isSeed: row.is_seed,
+    ...(row.archived_at ? { archivedAt: toIsoInstant(row.archived_at) } : {}),
   };
 }
 
 export function scheduleStateToRow(schedule: ScheduleState, userId: string): ScheduleStateRow {
   return {
+    ...(schedule.ruleVersion ? { learning_metadata: { ruleVersion: schedule.ruleVersion, evidenceStreak: schedule.evidenceStreak, lastEvidenceAt: schedule.lastEvidenceAt, recentFailures: schedule.recentFailures, lastPenaltySessionId: schedule.lastPenaltySessionId } } : {}),
     user_id: userId,
     learning_item_id: schedule.learningItemId,
     ability: schedule.ability,
@@ -272,6 +305,7 @@ export function scheduleStateToRow(schedule: ScheduleState, userId: string): Sch
 
 export function rowToScheduleState(row: ScheduleStateRow): ScheduleState {
   return {
+    ...structuredClone(row.learning_metadata ?? {}),
     learningItemId: row.learning_item_id,
     ability: row.ability,
     language: row.language,
@@ -285,6 +319,7 @@ export function rowToScheduleState(row: ScheduleStateRow): ScheduleState {
 
 export function studySessionToRow(session: StudySession, userId: string): StudySessionRow {
   return {
+    ...(session.ruleVersion ? { learning_metadata: { ruleVersion: session.ruleVersion, mode: session.mode, timeZone: session.timeZone, dailyPlanId: session.dailyPlanId, understoodItemIds: session.understoodItemIds, hintedIndices: session.hintedIndices, deviceId: session.deviceId } } : {}),
     id: session.id,
     user_id: userId,
     language: session.language,
@@ -305,6 +340,7 @@ export function studySessionToRow(session: StudySession, userId: string): StudyS
  */
 export function rowToStudySessionShell(row: StudySessionRow): Omit<StudySession, "exerciseResults"> {
   return {
+    ...structuredClone(row.learning_metadata ?? {}),
     id: row.id,
     language: row.language,
     status: row.status,
@@ -319,6 +355,7 @@ export function rowToStudySessionShell(row: StudySessionRow): Omit<StudySession,
 /** migration 專用：把一筆本機 ReviewAttempt 直接轉成可以 upsert 進 review_attempts 的 row。 */
 export function reviewAttemptToRow(attempt: ReviewAttempt, sequenceInSession: number, userId: string): ReviewAttemptRow {
   return {
+    ...(attempt.abilityEvidence ? { learning_metadata: structuredClone(attempt.abilityEvidence) } : {}),
     id: attempt.id,
     user_id: userId,
     session_id: attempt.sessionId,
@@ -337,6 +374,7 @@ export function reviewAttemptToRow(attempt: ReviewAttempt, sequenceInSession: nu
 /** pull-merge 專用：遠端 review_attempts row 直接還原成本機 ReviewAttempt（沿用遠端 id）。 */
 export function rowToReviewAttempt(row: ReviewAttemptRow): ReviewAttempt {
   return {
+    ...(row.learning_metadata ? { abilityEvidence: structuredClone(row.learning_metadata) } : {}),
     id: row.id,
     exerciseId: row.exercise_id,
     learningItemId: row.learning_item_id,
@@ -375,7 +413,7 @@ export class OutboxPersistenceError extends Error {
 function browserStorage(): Storage | undefined {
   if (typeof window === "undefined") return undefined;
   try {
-    return window.localStorage;
+    return accountStorage();
   } catch (error) {
     throw new OutboxPersistenceError("目前無法使用本機儲存，已停止同步以保留待送資料", { cause: error });
   }
@@ -391,7 +429,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * 的形狀，這裡的 sanitize 只需要防禦「外部造成的毀損」（手動改過 localStorage、
  * 瀏覽器擴充干擾等），比照 schema.ts 的精神但刻意輕量。
  */
-function isOutboxEntry(value: unknown): value is OutboxEntry {
+export function isOutboxEntry(value: unknown): value is OutboxEntry {
   if (!isRecord(value)) return false;
   return (
     typeof value.id === "string" &&

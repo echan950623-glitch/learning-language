@@ -111,7 +111,7 @@ describe("initializeStudySession — 沒有既有 session", () => {
       repository.addItem(jaInput({ promptZh: `單字 ${index}`, answer: `ことば${index}`, reading: `ことば${index}` }));
     }
 
-    const result = initializeStudySession(repository, NOW, 10);
+    const result = initializeStudySession(repository, NOW, 10, 10);
 
     expect(result.phase).toBe("active");
     if (result.phase === "active") expect(result.session.plannedUnits).toHaveLength(10);
@@ -136,7 +136,7 @@ describe("initializeStudySession — 恢復既有 in_progress session", () => {
     }
   });
 
-  it("有資料缺口且放棄成功時，會建立一個全新的 session（不是恢復壞掉的那個）", () => {
+  it("封存項目仍能恢復既有 session，歷史與題目不消失", () => {
     const repository = new MemoryLearningRepository();
     const gone = repository.addItem(jaInput({ promptZh: "會被刪除" }));
     const stillHere = repository.addItem(jaInput({ promptZh: "還在" }));
@@ -145,17 +145,18 @@ describe("initializeStudySession — 恢復既有 in_progress session", () => {
       [{ learningItemId: gone.id, ability: "recall", kind: "new" }],
       NOW
     );
-    repository.removeItem(gone.id); // 造成資料缺口：session 引用的項目消失了
+    repository.removeItem(gone.id); // 封存保留題目及關聯
 
     const result = initializeStudySession(repository, NOW);
 
     expect(result.phase).toBe("active");
     if (result.phase === "active") {
-      expect(result.session.id).not.toBe(staleSession.id);
-      expect(result.session.plannedUnits.some((u) => u.learningItemId === stillHere.id)).toBe(true);
+      expect(result.session.id).toBe(staleSession.id);
+      expect(result.session.plannedUnits.some((u) => u.learningItemId === gone.id)).toBe(true);
+      expect(repository.listItems().some(item => item.id === stillHere.id)).toBe(true);
     }
     // 舊 session 應該已經被標成 abandoned，不是還卡在 in_progress
-    expect(repository.getInProgressSession("ja")?.id).not.toBe(staleSession.id);
+    expect(repository.getInProgressSession("ja")?.id).toBe(staleSession.id);
   });
 
   it("有資料缺口但放棄失敗時，回報錯誤、不建立新 session、也不假裝舊 session 可用", () => {
@@ -167,7 +168,9 @@ describe("initializeStudySession — 恢復既有 in_progress session", () => {
       [{ learningItemId: gone.id, ability: "recall", kind: "new" }],
       NOW
     );
-    repository.removeItem(gone.id);
+    const snapshot = repository.captureSnapshot();
+    snapshot.items = snapshot.items.filter(item => item.id !== gone.id);
+    repository.restoreSnapshot(snapshot);
 
     (storage as MemoryStorage).failNextSetItem(1); // 讓接下來唯一一次 setItem（abandonSession 的持久化）失敗
 
@@ -192,7 +195,9 @@ describe("initializeStudySession — 恢復既有 in_progress session", () => {
     const repository = new LocalStorageLearningRepository();
     const gone = repository.addItem(jaInput());
     repository.getOrCreateInProgressSession("ja", [{ learningItemId: gone.id, ability: "recall", kind: "new" }], NOW);
-    repository.removeItem(gone.id);
+    const snapshot = repository.captureSnapshot();
+    snapshot.items = snapshot.items.filter(item => item.id !== gone.id);
+    repository.restoreSnapshot(snapshot);
 
     storage.failNextSetItem(1, () => new DOMException("quota", "QuotaExceededError"));
 

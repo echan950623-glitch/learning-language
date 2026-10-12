@@ -261,7 +261,7 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
     }
   );
 
-  it("導覽到 /progress 成功時不寫入快取（只有 \"/\" 是明確的 app shell）", async () => {
+  it("導覽到 /progress 保存該頁外殼，離線不能拿首頁冒充它", async () => {
     const fetchMock = vi.fn<FetchImpl>(async () => ok("<html>progress</html>"));
     const { dispatch, caches } = createSandbox(fetchMock);
     const url = `${ORIGIN}/progress`;
@@ -270,7 +270,7 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
     dispatch("fetch", event);
     await event.respondWithPromise;
 
-    expect(await findCachedEntry(caches, "/progress")).toBeUndefined();
+    expect(await findCachedEntry(caches, "/progress")).toBeDefined();
     expect(await findCachedEntry(caches, url)).toBeUndefined();
   });
 
@@ -291,8 +291,9 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
       throw new TypeError("network unreachable");
     });
     const { dispatch, caches } = createSandbox(fetchMock);
-    const shellCache = await caches.open("learning-language-shell-v18");
-    await shellCache.put("/", ok("<html>cached shell</html>"));
+    const shellCache = await caches.open("learning-language-shell-v30");
+    await shellCache.put("/", ok("<html>home</html>"));
+    await shellCache.put("/study", ok("<html>cached shell</html>"));
 
     const event = makeEvent(
       makeRequest({ url: `${ORIGIN}/study`, mode: "navigate", destination: "document" })
@@ -316,6 +317,13 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
     const response = await event.respondWithPromise!;
 
     expect(response.status).toBe(503);
+  });
+  it("未知頁面離線時不拿已快取的首頁當成成功", async () => {
+    const { dispatch, caches } = createSandbox(async () => { throw new TypeError("offline"); });
+    await (await caches.open("learning-language-shell-v30")).put("/", ok("home"));
+    const event = makeEvent(makeRequest({ url: `${ORIGIN}/unknown`, mode: "navigate" }));
+    dispatch("fetch", event);
+    expect((await event.respondWithPromise!).status).toBe(503);
   });
 });
 
@@ -379,7 +387,7 @@ describe("sw.js／同源靜態資源：白名單快取", () => {
     const { dispatch, caches } = createSandbox(fetchMock);
     const url = `${ORIGIN}/manifest.webmanifest`;
     const headers = new Headers({ Authorization: "Bearer secret-token" });
-    await (await caches.open("learning-language-shell-v18")).put(url, ok("shared cached body"));
+    await (await caches.open("learning-language-shell-v30")).put(url, ok("shared cached body"));
     const event = makeEvent(makeRequest({ url, headers }));
 
     dispatch("fetch", event);
@@ -406,7 +414,7 @@ describe("sw.js／同源靜態資源：白名單快取", () => {
       throw new TypeError("network unreachable");
     });
     const { dispatch, caches } = createSandbox(fetchMock);
-    const cache = await caches.open("learning-language-shell-v18");
+    const cache = await caches.open("learning-language-shell-v30");
     await cache.put(url, ok("cached icon"));
 
     const event = makeEvent(makeRequest({ url, destination: "image" }));
@@ -424,7 +432,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
     const { dispatch, caches, sandbox } = createSandbox(fetchMock);
 
     await (await caches.open("learning-language-shell-v12")).put("/", ok("old"));
-    await (await caches.open("learning-language-shell-v18")).put("/", ok("current"));
+    await (await caches.open("learning-language-shell-v30")).put("/", ok("current"));
     await (await caches.open("some-unrelated-app-cache")).put("/x", ok("unrelated"));
 
     const event = makeEvent();
@@ -432,7 +440,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
     await event.waitUntilPromise;
 
     const remaining = await caches.keys();
-    expect(remaining).toContain("learning-language-shell-v18");
+    expect(remaining).toContain("learning-language-shell-v30");
     expect(remaining).toContain("some-unrelated-app-cache");
     expect(remaining).not.toContain("learning-language-shell-v12");
     expect(sandbox.clientsClaimed).toBe(true);
@@ -440,7 +448,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
 });
 
 describe("sw.js／install：只預先快取可公開的靜態檔", () => {
-  it("預先快取 manifest 到 v18，不在 install 階段快取可能帶 session 的 /", async () => {
+  it("預快取 manifest 與各公開頁面，頁面 warmup 不帶登入憑證", async () => {
     const fetchMock = vi.fn<FetchImpl>(async (input) => ok(`body:${keyOf(input)}`));
     const { dispatch, caches, sandbox } = createSandbox(fetchMock);
 
@@ -448,8 +456,11 @@ describe("sw.js／install：只預先快取可公開的靜態檔", () => {
     dispatch("install", event);
     await event.waitUntilPromise;
 
-    expect(await caches.keys()).toContain("learning-language-shell-v18");
-    expect(await findCachedEntry(caches, "/")).toBeUndefined();
+    expect(await caches.keys()).toContain("learning-language-shell-v30");
+    expect(await findCachedEntry(caches, "/")).toBeDefined();
+    expect(await findCachedEntry(caches, "/settings")).toBeDefined();
+    expect(await findCachedEntry(caches, "/practice")).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledWith("/study", { credentials: "omit" });
     expect(await findCachedEntry(caches, "/manifest.webmanifest")).toBeDefined();
     expect(sandbox.skipWaitingCalled).toBe(true);
   });
@@ -461,5 +472,15 @@ describe("sw.js／install：只預先快取可公開的靜態檔", () => {
     dispatch("install", event);
     await event.waitUntilPromise;
     expect(await findCachedEntry(caches, "/manifest.webmanifest")).toBeUndefined();
+    expect(await findCachedEntry(caches, "/settings")).toBeUndefined();
+  });
+  it("暖機只抓同源版本化資源，不抓登入或跨來源 script", async () => {
+    const fetchMock = vi.fn<FetchImpl>(async input => ok(keyOf(input) === "/study"
+      ? '<script src="/_next/static/chunks/study.js"></script><script src="/auth/callback"></script><script src="https://other.example/private.js"></script>' : "static"));
+    const { dispatch, caches } = createSandbox(fetchMock);
+    const event = makeEvent(); dispatch("install", event); await event.waitUntilPromise;
+    expect(await findCachedEntry(caches, "/_next/static/chunks/study.js")).toBeDefined();
+    expect(fetchMock).not.toHaveBeenCalledWith("/auth/callback", expect.anything());
+    expect(fetchMock).not.toHaveBeenCalledWith("https://other.example/private.js", expect.anything());
   });
 });

@@ -1,3 +1,4 @@
+import { resetAccountStorageForTests } from "../repository/accountStorage";
 /**
  * 最小可用的 localStorage polyfill，只供測試用。
  * Vitest 在 Node 環境執行時沒有真正的瀏覽器 storage，
@@ -63,6 +64,7 @@ export class MemoryStorage implements Storage {
 }
 
 export function installMockLocalStorage(): MemoryStorage {
+  resetAccountStorageForTests();
   const storage = new MemoryStorage();
   Object.defineProperty(globalThis, "window", {
     value: globalThis,

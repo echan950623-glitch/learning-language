@@ -1,19 +1,6 @@
-/**
- * 雲端同步的組合層：包一層 `LocalStorageLearningRepository`，本機讀寫完全走原本的
- * 同步路徑不變（見 ARCHITECTURE.md「核心決策」）。
- *
- * 規則（每個會寫入的方法都一樣）：
- * 1. 呼叫 inner 對應方法（完全不變、同步）——失敗就直接拋出，不寫 outbox（沒發生的事
- *    不用同步），呼叫端看到的行為跟今天完全一樣。
- * 2. 沒有丟例外 → 組一筆 outbox entry → enqueue（同步、localStorage）。
- * 3. `kick()`——非阻塞（不 await），背景嘗試 drain outbox。
- * 4. 立即回傳 inner 的結果，使用者體感速度不變。
- *
- * 這裡「成功」的定義是「inner 呼叫沒有丟例外」，不是「這次呼叫真的改變了什麼」——例如
- * `markAttemptCorrect`／`abandonSession` 對已經是目標狀態的輸入是冪等 no-op，這裡仍然
- * 會 enqueue；對應的 Supabase RPC／操作本身也設計成冪等（見 ARCHITECTURE.md 的 RPC
- * 行為說明），多送一次沒有副作用，換來的是實作簡單、不需要從回傳值反推「這次是不是
- * 真的有變更」。
+/** Local content and its pending operation are one account snapshot.
+ * Browser callers must use mutateRepository / withDataLock so IndexedDB commits
+ * before reporting success. Legacy standalone synchronous tests use localStorage.
  */
 
 import type {
@@ -25,6 +12,9 @@ import type {
   ScheduleState,
   StudySession,
   StudySessionPlannedUnit,
+  StudyMode,
+  DailyPlan,
+  LearningItemEdit,
 } from "../domain/types";
 import type { LocalStorageLearningRepository } from "./localStorageRepository";
 import type {
@@ -46,8 +36,13 @@ import {
   type OutboxOperation,
   type RecordGradedAttemptRpcInput,
   type ExpectedScheduleState,
+  scheduleStateToRow,
+  reviewAttemptToRow,
+  type LearningEventPayload,
 } from "./sync/outbox";
 import { kick } from "./sync/syncEngine";
+import { atomicAccountWrite, getAccountOwner } from "./accountStorage";
+import { generateId } from "../domain/id";
 
 function buildRecordGradedAttemptPayload(
   input: RecordGradedAttemptInput,
@@ -109,12 +104,28 @@ function scheduleExpectation(schedule: ScheduleState | undefined): ExpectedSched
 }
 
 export class SyncingLearningRepository implements LearningRepository {
-  private readonly inner: LocalStorageLearningRepository;
+  private inner: LocalStorageLearningRepository;
   private readonly userId: string;
 
   constructor(inner: LocalStorageLearningRepository, userId: string) {
     this.inner = inner;
     this.userId = userId;
+    const mutations = new Set(["addItem", "addItemsIfMissing", "removeItem", "removeSeedItems", "getOrCreateInProgressSession", "recordGradedAttempt", "markAttemptCorrect", "abandonSession", "saveDailyPlan", "acknowledgeIntroduction", "recordHint", "skipVocabulary", "editItem"]);
+    return new Proxy(this, {
+      get(target, property) {
+        const value = Reflect.get(target, property);
+        if (typeof value !== "function") return value;
+        if (!mutations.has(String(property))) return value.bind(target);
+        return (...args: unknown[]) => {
+          if (getAccountOwner() !== null && getAccountOwner() !== target.userId) throw new Error("帳戶已切換，舊畫面不能寫入。");
+          // Inner copy-on-write commits its memory only after persistence; restore it if
+          // the final encompassing snapshot/outbox commit fails.
+          const checkpoint = target.inner.captureSnapshot();
+          try { return atomicAccountWrite(() => value.apply(target, args)); }
+          catch (error) { target.inner.restoreSnapshot(checkpoint); throw error; }
+        };
+      },
+    });
   }
 
   get durability(): RepositoryDurability {
@@ -156,11 +167,59 @@ export class SyncingLearningRepository implements LearningRepository {
     return this.inner.getInProgressSession(language);
   }
 
+  listDailyPlans(): DailyPlan[] { return this.inner.listDailyPlans(); }
+  saveDailyPlan(plan: DailyPlan): DailyPlan {
+    const saved = this.inner.saveDailyPlan(plan);
+    if (saved.reservationOwner === this.userId) this.enqueueAndKick({ type: "learning_event", payload: { id: generateId("event"), kind: "plan", plan: saved } });
+    return saved;
+  }
+  acknowledgeIntroduction(sessionId: string, itemId: string, now: Date, alreadyKnown = false): StudySession {
+    const before = this.inner.listStudySessions({ status: "all" }).find(session => session.id === sessionId)!;
+    const after = this.inner.acknowledgeIntroduction(sessionId, itemId, now, alreadyKnown);
+    if (!before.understoodItemIds?.includes(itemId)) this.enqueueAndKick({ type: "learning_event", payload: {
+      id: generateId("event"), kind: "introduction", beforeSession: studySessionToRow(before, this.userId),
+      session: studySessionToRow(after, this.userId), item: learningItemToRow(this.inner.getItem(itemId)!, this.userId) } });
+    return after;
+  }
+  skipVocabulary(sessionId: string, index: number, itemId: string, now: Date): StudySession {
+    const before = this.inner.listStudySessions({ status: "all" }).find(session => session.id === sessionId)!;
+    const after = this.inner.skipVocabulary(sessionId, index, itemId, now);
+    this.enqueueAndKick({ type: "learning_event", payload: {
+      id: generateId("event"), kind: "skip", beforeSession: studySessionToRow(before, this.userId), session: studySessionToRow(after, this.userId) } });
+    return after;
+  }
+
+  recordHint(sessionId: string, index: number): StudySession {
+    const before = this.inner.listStudySessions({ status: "all" }).find(session => session.id === sessionId)!;
+    const after = this.inner.recordHint(sessionId, index);
+    if (before.ruleVersion === 2 && !before.hintedIndices?.includes(index)) this.enqueueAndKick({ type: "learning_event", payload: {
+      id: generateId("event"), kind: "hint", beforeSession: studySessionToRow(before, this.userId), session: studySessionToRow(after, this.userId) } });
+    return after;
+  }
+
+  private eventPayload(kind: "attempt" | "correction", before: StudySession, previous: ScheduleState | undefined, result: RecordGradedAttemptResult): LearningEventPayload {
+    const schedule = this.inner.getScheduleState(result.attempt.learningItemId, result.attempt.exerciseType === "reading" ? "reading" : "recall");
+    return { id: generateId("event"), kind, beforeSession: studySessionToRow(before, this.userId), session: studySessionToRow(result.session, this.userId),
+      item: learningItemToRow(this.inner.getItem(result.attempt.learningItemId)!, this.userId),
+      attempt: reviewAttemptToRow(result.attempt, result.session.exerciseResults.findIndex(answer => answer.exerciseId === result.attempt.exerciseId), this.userId),
+      beforeSchedule: previous ? scheduleStateToRow(previous, this.userId) : null, schedule: schedule ? scheduleStateToRow(schedule, this.userId) : null,
+      plan: this.inner.listDailyPlans().find(plan => plan.id === result.session.dailyPlanId && plan.reservationOwner === this.userId) };
+  }
+
   // ---- 寫入：inner 不變 → 成功才 enqueue + kick ------------------------------
 
   addItem(input: NewLearningItemInput): LearningItem {
     const item = this.inner.addItem(input);
     this.enqueueAndKick({ type: "upsert_item", payload: learningItemToRow(item, this.userId) });
+    return item;
+  }
+
+  editItem(id: string, expectedVersion: number, input: LearningItemEdit, now: Date): LearningItem {
+    const before = this.inner.getItem(id)!;
+    const beforeSchedules = this.inner.listScheduleStates().filter(schedule => schedule.learningItemId === id);
+    const item = this.inner.editItem(id, expectedVersion, input, now);
+    this.enqueueAndKick({ type: "learning_event", payload: { id: generateId("event"), kind: "edit", beforeItem: learningItemToRow(before, this.userId), item: learningItemToRow(item, this.userId),
+      beforeSchedules: beforeSchedules.map(schedule => scheduleStateToRow(schedule, this.userId)), schedules: this.inner.listScheduleStates().filter(schedule => schedule.learningItemId === id).map(schedule => scheduleStateToRow(schedule, this.userId)) } });
     return item;
   }
 
@@ -177,7 +236,8 @@ export class SyncingLearningRepository implements LearningRepository {
 
   removeItem(id: string): void {
     this.inner.removeItem(id);
-    this.enqueueAndKick({ type: "delete_items", payload: { ids: [id] } });
+    const archivedAt = this.inner.getItem(id)?.archivedAt;
+    if (archivedAt) this.enqueueAndKick({ type: "archive_items", payload: { ids: [id], archivedAt } });
   }
 
   removeSeedItems(language?: Language): number {
@@ -193,7 +253,7 @@ export class SyncingLearningRepository implements LearningRepository {
     const removed = this.inner.removeSeedItems(language);
 
     if (targetIds.length > 0) {
-      this.enqueueAndKick({ type: "delete_items", payload: { ids: targetIds } });
+      this.enqueueAndKick({ type: "archive_items", payload: { ids: targetIds, archivedAt: this.inner.getItem(targetIds[0])!.archivedAt! } });
     }
     return removed;
   }
@@ -201,9 +261,10 @@ export class SyncingLearningRepository implements LearningRepository {
   getOrCreateInProgressSession(
     language: Language,
     plannedUnits: StudySessionPlannedUnit[],
-    now: Date
+    now: Date,
+    options?: { mode: StudyMode; dailyPlanId?: string; timeZone?: string }
   ): StudySession {
-    const session = this.inner.getOrCreateInProgressSession(language, plannedUnits, now);
+    const session = this.inner.getOrCreateInProgressSession(language, plannedUnits, now, options);
     // 「建立」與「恢復既有 in_progress」都送一次 upsert_session：恢復時多送一次是無害的
     // 冪等 upsert，涵蓋「第一次建立當下 outbox 還沒送出、裝置就離線了」這種殘留情境。
     this.enqueueAndKick({ type: "upsert_session", payload: studySessionToRow(session, this.userId) });
@@ -225,6 +286,7 @@ export class SyncingLearningRepository implements LearningRepository {
    * 是無副作用的冪等成功。兩筆操作一次寫入 outbox，不會出現只寫到一半的順序。
    */
   recordGradedAttempt(input: RecordGradedAttemptInput): RecordGradedAttemptResult {
+    const previous = this.inner.getScheduleState(input.learningItemId, input.ability);
     const expectedSchedule = scheduleExpectation(this.inner.getScheduleState(input.learningItemId, input.ability));
     const sessionBeforeAttempt = this.inner
       .listStudySessions({ status: "all" })
@@ -233,6 +295,11 @@ export class SyncingLearningRepository implements LearningRepository {
       sessionBeforeAttempt !== undefined && !outboxHasPendingSessionUpsert(input.sessionId);
 
     const result = this.inner.recordGradedAttempt(input);
+
+    if (sessionBeforeAttempt?.ruleVersion === 2) {
+      this.enqueueAndKick({ type: "learning_event", payload: this.eventPayload("attempt", sessionBeforeAttempt, previous, result) });
+      return result;
+    }
 
     const operations: OutboxOperation[] = [];
     if (needsSessionUpsert && sessionBeforeAttempt) {
@@ -248,6 +315,14 @@ export class SyncingLearningRepository implements LearningRepository {
   }
 
   markAttemptCorrect(input: MarkAttemptCorrectInput): RecordGradedAttemptResult {
+    const before = this.inner.listStudySessions({ status: "all" }).find(session => session.id === input.sessionId);
+    if (before?.ruleVersion === 2) {
+      const attempt = this.inner.listReviewAttempts().find(attempt => attempt.sessionId === input.sessionId && attempt.exerciseId === input.exerciseId)!;
+      const previous = this.inner.getScheduleState(attempt.learningItemId, attempt.exerciseType === "reading" ? "reading" : "recall");
+      const result = this.inner.markAttemptCorrect(input);
+      if (attempt.result !== "correct") this.enqueueAndKick({ type: "learning_event", payload: this.eventPayload("correction", before, previous, result) });
+      return result;
+    }
     const attempt = this.inner
       .listReviewAttempts()
       .find((candidate) => candidate.sessionId === input.sessionId && candidate.exerciseId === input.exerciseId);

@@ -7,6 +7,7 @@
  */
 
 import type { AbilityKind, Exercise, LearningItem } from "./types";
+import { activeEnglishVariant } from "./englishPractice";
 import { generateId } from "./id";
 import { nowIso } from "./time";
 
@@ -16,12 +17,19 @@ export interface QueueUnitLike {
 }
 
 export function buildExerciseForUnit(item: LearningItem, ability: AbilityKind): Exercise {
+  if (ability === "meaning") {
+    const v = activeEnglishVariant(item);
+    if (!v) throw new Error("英文題目尚未凍結。");
+    return { id: generateId("exercise"), exerciseType: "meaning", learningItemIds: [item.id],
+      prompt: v.mode === "context" ? `${v.sentence}\n${v.targetText} 在這句裡是什麼意思？` : `${item.answer}（${item.partOfSpeech ?? "指定用法"}）是什麼意思？`,
+      expectedAnswer: v.choices.find(c => c.id === v.correctChoiceId)!.text, createdAt: nowIso() };
+  }
   if (ability === "reading") {
     return {
       id: generateId("exercise"),
       exerciseType: "reading",
       learningItemIds: [item.id],
-      prompt: item.answer,
+      prompt: item.verificationQuestion ? item.promptZh : item.answer,
       // queue.ts 只有在 hasUsableReading(item) 成立時才會建立 reading 單位，
       // 所以這裡 item.reading 一定存在；仍保留 fallback 避免型別以外的資料異常直接炸掉。
       expectedAnswer: item.reading ?? item.answer,

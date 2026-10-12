@@ -12,8 +12,11 @@ import type {
   StudySessionExerciseResult,
 } from "./types";
 import { requiredAbilities } from "./abilities";
-import { deriveStatus } from "./srs";
+import { deriveStatus, combineAbilityStatuses } from "./srs";
+import { evidenceStatus, learningDay } from "./learningRules";
 import { addDays } from "./time";
+import { englishStatus } from "./englishPractice";
+import { practiceEvidence } from "./learningPractice";
 
 export interface StatusCounts {
   total: number;
@@ -45,16 +48,18 @@ function emptyStatusCounts(): StatusCounts {
 export function computeAbilityStatusCounts(
   items: LearningItem[],
   scheduleStates: ScheduleState[],
-  language: Language
+  language: Language,
+  evidenceOnly = false,
+  attempts: ReviewAttempt[] = []
 ): Record<AbilityKind, StatusCounts> {
   const scheduleByKey = new Map(scheduleStates.map((s) => [`${s.learningItemId}:${s.ability}`, s]));
-  const result: Record<AbilityKind, StatusCounts> = { recall: emptyStatusCounts(), reading: emptyStatusCounts() };
+  const result: Record<AbilityKind, StatusCounts> = { recall: emptyStatusCounts(), reading: emptyStatusCounts(), meaning: emptyStatusCounts() };
 
   for (const item of items) {
-    if (item.language !== language) continue;
+    if (item.language !== language || item.practice || item.coachReport) continue;
     for (const ability of requiredAbilities(item)) {
       const schedule = scheduleByKey.get(`${item.id}:${ability}`);
-      const status = schedule ? deriveStatus(schedule.streak, schedule.lapseCount, true) : "new";
+      const status = item.englishPractice ? englishStatus(item, scheduleStates, attempts) : evidenceOnly || schedule?.ruleVersion === 2 ? evidenceStatus(schedule) : schedule ? deriveStatus(schedule.streak, schedule.lapseCount, true) : "new";
       result[ability].total += 1;
       result[ability][status] += 1;
     }
@@ -81,6 +86,7 @@ export function summarizeSessionResultsByAbility(
   results: StudySessionExerciseResult[]
 ): Record<AbilityKind, AbilityResultSummary> {
   return {
+    meaning: summarizeResults(results.filter((r) => r.exerciseType === "meaning")),
     recall: summarizeResults(results.filter((r) => r.exerciseType === "recall")),
     reading: summarizeResults(results.filter((r) => r.exerciseType === "reading")),
   };
@@ -90,6 +96,34 @@ export interface AccuracyResult {
   /** 0～100 的整數百分比；sampleSize 為 0 時回傳 0，呼叫端需另外處理「無資料」顯示 */
   accuracyPercent: number;
   sampleSize: number;
+}
+
+/** View-only projection. Never rewrites legacy status, due dates, or attempts. */
+export function evidenceItemStatus(item: LearningItem, schedules: ScheduleState[], attempts: ReviewAttempt[] = []): LearningItem["status"] {
+  if (item.englishPractice) return englishStatus(item, schedules, attempts);
+  if (item.practice) return practiceEvidence(item, schedules, attempts).status;
+  const relevant = schedules.filter(schedule => schedule.learningItemId === item.id);
+  if (!relevant.length && item.introducedAt) return "learning";
+  return combineAbilityStatuses(requiredAbilities({ ...item, reviewPaused: false }).map(ability => evidenceStatus(relevant.find(schedule => schedule.ability === ability))));
+}
+export function computeEvidenceStatusCounts(items: LearningItem[], schedules: ScheduleState[], language: Language, attempts: ReviewAttempt[] = []): StatusCounts {
+  return computeStatusCounts(items.filter(item => !item.coachReport).map(item => ({ ...item, status: evidenceItemStatus(item, schedules, attempts) })), language);
+}
+export function computeLearningEvidenceStats(attempts: ReviewAttempt[], language: Language, now: Date, days = 7) {
+  const today = learningDay(now);
+  const earliestDay = learningDay(new Date(now.getTime() - (days - 1) * 86400000));
+  const recent = attempts.filter(attempt => attempt.language === language && learningDay(new Date(attempt.reviewedAt)) >= earliestDay && learningDay(new Date(attempt.reviewedAt)) <= today);
+  const dueFirst = recent.filter(attempt => attempt.abilityEvidence?.wasDue && attempt.abilityEvidence.attemptNumber === 0 && !attempt.usedHint);
+  const correct = dueFirst.filter(attempt => attempt.result === "correct").length;
+  return { dueFirstAccuracy: { accuracyPercent: dueFirst.length ? Math.round(correct * 100 / dueFirst.length) : 0, sampleSize: dueFirst.length },
+    firstAttempts: recent.filter(attempt => attempt.abilityEvidence?.attemptNumber === 0).length,
+    retries: recent.filter(attempt => (attempt.abilityEvidence?.attemptNumber ?? 0) > 0).length,
+    hinted: recent.filter(attempt => attempt.usedHint).length,
+    legacyUnclassified: recent.filter(attempt => !attempt.abilityEvidence).length,
+    studyDays: new Set(recent.map(attempt => learningDay(new Date(attempt.reviewedAt)))).size,
+    effectiveTimeMs: recent.filter(attempt => attempt.abilityEvidence).reduce((total, attempt) => total + attempt.responseTimeMs, 0),
+    byMode: Object.fromEntries(["today", "wrong", "full", "random"].map(mode => [mode, recent.filter(attempt => attempt.abilityEvidence?.mode === mode).length])),
+  };
 }
 
 /**

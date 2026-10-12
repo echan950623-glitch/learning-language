@@ -1,3 +1,4 @@
+import { getAccountOwner, setAccountOwner, subscribeDataChanged, withDataLock, notifyDataChanged, refreshAccountCache, hasDurableAccountCache } from "./accountStorage";
 import { LocalStorageLearningRepository } from "./localStorageRepository";
 import { MemoryLearningRepository } from "./memoryRepository";
 import { SyncingLearningRepository } from "./syncingRepository";
@@ -21,8 +22,18 @@ export { PersistenceFailedError, describePersistenceError } from "./errors";
 export { STORAGE_KEY, SCHEMA_VERSION } from "./schema";
 
 let singleton: LearningRepository | null = null;
+let resolveAuthInitialization!: () => void;
+const authInitialization = new Promise<void>(resolve => { resolveAuthInitialization = resolve; });
+let accountInitialization: Promise<void> = Promise.resolve();
+/** Auth bootstrap calls this after choosing the account; no guest writes before that decision. */
+export function markRepositoryAuthInitialized(): void { resolveAuthInitialization(); }
+export async function waitForRepositoryInitialization(): Promise<void> {
+  await authInitialization;
+  await accountInitialization;
+}
 
 function localStorageIsUsable(): boolean {
+  if (hasDurableAccountCache()) return true;
   try {
     const testKey = "__learning_language_storage_test__";
     window.localStorage.setItem(testKey, "1");
@@ -54,6 +65,7 @@ export function getRepository(): LearningRepository {
     console.warn("[learning-language] 這個瀏覽器環境無法使用 localStorage，改用記憶體暫存（重新整理將遺失資料）");
     singleton = new MemoryLearningRepository();
   }
+  if (currentCloudSyncUserId && singleton instanceof LocalStorageLearningRepository) singleton = new SyncingLearningRepository(singleton, currentCloudSyncUserId);
   return singleton;
 }
 
@@ -61,6 +73,10 @@ export function getRepository(): LearningRepository {
 export function __resetRepositorySingletonForTests(): void {
   singleton = null;
   currentCloudSyncUserId = null;
+  cloudSyncEpoch += 1;
+  lastCloudOptions = null;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  if (revisionTimer) clearInterval(revisionTimer);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +109,8 @@ function createLocalOnlyRepository(): LearningRepository {
  * 登入當下與「背景 drain 建立別名或重放排程」後都走這條，兩者行為一致；`epoch` 讓已被換掉的設定
  * （登出／換人）之後才 settle 的結果不會覆蓋較新的 singleton。
  */
-function refreshFromRemote(options: CloudSyncOptions, epoch: number): void {
-  void pullAndMergeRemoteData(options.supabase, options.userId)
+function refreshFromRemote(options: CloudSyncOptions, epoch: number): Promise<void> {
+  return pullAndMergeRemoteData(options.supabase, options.userId, () => epoch === cloudSyncEpoch && options.userId === currentCloudSyncUserId)
     .then(() => {
       if (epoch !== cloudSyncEpoch) return;
       if (typeof window === "undefined" || !localStorageIsUsable()) return;
@@ -104,7 +120,8 @@ function refreshFromRemote(options: CloudSyncOptions, epoch: number): void {
     })
     .catch((error) => {
       if (epoch !== cloudSyncEpoch) return;
-      console.warn("[learning-language] 登入後下載雲端資料失敗，暫時只使用本機資料，稍後會自動重試同步", error);
+      console.warn("[learning-language] 雲端下載失敗，稍後重試", error);
+      refreshTimer = setTimeout(() => { if (epoch === cloudSyncEpoch) refreshFromRemote(options, epoch); }, 15000);
     });
 }
 
@@ -131,12 +148,17 @@ function engineConfig(options: CloudSyncOptions) {
  *      合併後資料的 `LocalStorageLearningRepository` 並換掉 singleton 的 inner。
  */
 export function configureCloudSync(options: CloudSyncOptions | null): void {
+  lastCloudOptions = options;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  if (revisionTimer) clearInterval(revisionTimer);
+  revisionTimer = null;
   if (!options) {
+    cloudSyncEpoch += 1;
     configureSyncEngine(null);
-    if (singleton instanceof SyncingLearningRepository) {
-      singleton = createLocalOnlyRepository();
-    }
+    setAccountOwner(null);
+    singleton = null;
     currentCloudSyncUserId = null;
+    accountInitialization = refreshAccountCache().catch(() => undefined);
     return;
   }
 
@@ -144,8 +166,11 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
     // 同一個使用者、已經是同步模式：只刷新 syncEngine 持有的 client 參照＋踢一次背景
     // drain（涵蓋 token 剛刷新、outbox 剛好有殘留的情況），不重新包裝、不重新 pull-merge。
     configureSyncEngine(engineConfig(options));
+    watchRemoteRevision(options, cloudSyncEpoch);
     return;
   }
+  setAccountOwner(options.userId);
+  singleton = null;
   currentCloudSyncUserId = options.userId;
 
   cloudSyncEpoch += 1;
@@ -153,11 +178,52 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
 
   configureSyncEngine(engineConfig(options));
 
-  const reuseExistingInner = singleton instanceof LocalStorageLearningRepository ? singleton : null;
+  const reuseExistingInner = null;
   const inner =
     reuseExistingInner ?? (typeof window !== "undefined" && localStorageIsUsable() ? new LocalStorageLearningRepository() : null);
 
   singleton = inner ? new SyncingLearningRepository(inner, options.userId) : new MemoryLearningRepository();
 
-  refreshFromRemote(options, epoch);
+  accountInitialization = refreshAccountCache().then(() => refreshFromRemote(options, epoch)).catch(() => undefined);
+  watchRemoteRevision(options, epoch);
 }
+
+/** A visible tab notices other devices without rewriting the active answer form. */
+function watchRemoteRevision(options: CloudSyncOptions, epoch: number): void {
+  if (typeof document === "undefined") return;
+  let revision: string | undefined;
+  let checking = false;
+  revisionTimer = setInterval(() => {
+    if (document.visibilityState !== "visible" || checking || epoch !== cloudSyncEpoch) return;
+    checking = true;
+    void Promise.resolve(options.supabase.rpc("get_learning_revision")).then(({ data, error }) => {
+      if (error || epoch !== cloudSyncEpoch || typeof data !== "string" || !/^\d+$/.test(data)) return;
+      if (revision !== data) { revision = data; refreshFromRemote(options, epoch); }
+    }).catch(() => undefined).finally(() => { checking = false; });
+  }, 30_000);
+}
+
+/** Always acquire the account Web Lock before browser writes; reload after other tabs. */
+export async function mutateRepository<T>(action: (repository: LearningRepository) => T): Promise<T> {
+  return withDataLock(() => {
+    singleton = getAccountOwner() ? new SyncingLearningRepository(new LocalStorageLearningRepository(), getAccountOwner()!) : createLocalOnlyRepository();
+    return action(singleton);
+  }).catch(error => { singleton = null; throw error; });
+}
+export function refreshCloudData(): void {
+  if (currentCloudSyncUserId && lastCloudOptions) refreshFromRemote(lastCloudOptions, cloudSyncEpoch);
+}
+let lastCloudOptions: CloudSyncOptions | null = null;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+let revisionTimer: ReturnType<typeof setInterval> | null = null;
+subscribeDataChanged(() => { singleton = null; });
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("storage", () => { singleton = null; void refreshAccountCache().catch(() => notifyDataChanged()); });
+  void refreshAccountCache().catch(() => undefined);
+  window.addEventListener("focus", refreshCloudData);
+  window.addEventListener("online", refreshCloudData);
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshCloudData();
+  });
+}
+export { subscribeDataChanged };

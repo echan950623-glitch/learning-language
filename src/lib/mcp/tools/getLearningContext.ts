@@ -1,3 +1,5 @@
+import { fetchAllRows } from "@/lib/supabase/pagination";
+import { fetchStableSnapshot } from "@/lib/supabase/snapshot";
 /**
  * MCP 工具：`get_learning_context`。只讀，重用 `src/domain/stats.ts`／`src/domain/practice.ts`
  * 既有且已測試的純函式做統計，這裡只負責「查 RLS-scoped 的 rows → 轉成 domain 型別 →
@@ -11,10 +13,11 @@ import {
   computeAbilityStatusCounts,
   computeAccuracyOverWindow,
   computeHintRateOverWindow,
-  computeStatusCounts,
   computeUpcomingReviewOverview,
+  computeLearningEvidenceStats,
+  computeEvidenceStatusCounts,
 } from "@/domain/stats";
-import type { Language } from "@/domain/types";
+import type { Language, DailyPlan } from "@/domain/types";
 import {
   mapLearningItemRow,
   mapReviewAttemptRow,
@@ -30,9 +33,9 @@ export const title = "取得學習狀態總覽";
 
 export const description =
   "取得使用者目前的學習狀態總覽（只讀，不會修改任何資料）：依語言（日文／英文）分別回報" +
-  "熟練度分布、到期複習數、近 N 天正確率與提示使用率、依能力（漢字／單字練習 recall、" +
-  "平假名練習 reading）拆分的狀態、錯題數與作答量。用來讓 AI 助理了解使用者目前的學習" +
-  "狀況，才能給出有根據的複習建議，不是用來修改任何資料。";
+  "詞彙回想／讀音的穩定程度、到期量、每日計畫、首答、提示、补考及模式來源。主要正確率請使用 evidence.dueFirstAccuracy：到期首次無提示作答。" +
+  "accuracy 保留舊版全部作答統計以相容既有客戶端，不能當成獨立回想成功率；舊紀錄無法分類的部分另列 legacyUnclassified。" +
+  "只提供建議，不修改排程或自行發放新字額度。英文為四選一意思理解，不能當成拼寫或口說證據。";
 
 export const annotations = {
   readOnlyHint: true,
@@ -53,6 +56,12 @@ const statusCountsSchema = z.object({
 });
 
 const languageContextSchema = z.object({
+  learningRulesVersion: z.literal(2),
+  evidence: z.object({
+    dueFirstAccuracy: z.object({ accuracyPercent: z.number(), sampleSize: z.number() }),
+    firstAttempts: z.number(), retries: z.number(), hinted: z.number(), legacyUnclassified: z.number(), studyDays: z.number(), effectiveTimeMs: z.number(), byMode: z.record(z.string(), z.number()),
+  }),
+  dailyPlans: z.array(z.object({ date: z.string(), timeZone: z.string(), newItemCap: z.number(), reservedNewWords: z.number(), plannedUnits: z.number(), completedUnits: z.number(), reason: z.string(), busy: z.boolean() })),
   masteryBreakdown: statusCountsSchema,
   dueCount: z.object({
     dueWithinOneDay: z.number().int().nonnegative(),
@@ -69,6 +78,7 @@ const languageContextSchema = z.object({
   byAbility: z.object({
     recall: statusCountsSchema,
     reading: statusCountsSchema,
+    meaning: statusCountsSchema,
   }),
   wrongAnswerCount: z.number().int().nonnegative(),
   studyVolume: z.number().int().nonnegative(),
@@ -100,20 +110,14 @@ export async function handler(
   let itemRows: LearningItemRow[];
   let scheduleRows: ScheduleStateRow[];
   let attemptRows: ReviewAttemptRow[];
+  let planRows: { plan: DailyPlan }[];
   try {
-    const [itemsResult, scheduleResult, attemptsResult] = await Promise.all([
-      supabase.from("learning_items").select("*"),
-      supabase.from("schedule_states").select("*"),
-      supabase.from("review_attempts").select("*").gte("reviewed_at", windowStartIso),
-    ]);
-
-    if (itemsResult.error) throw itemsResult.error;
-    if (scheduleResult.error) throw scheduleResult.error;
-    if (attemptsResult.error) throw attemptsResult.error;
-
-    itemRows = (itemsResult.data ?? []) as LearningItemRow[];
-    scheduleRows = (scheduleResult.data ?? []) as ScheduleStateRow[];
-    attemptRows = (attemptsResult.data ?? []) as ReviewAttemptRow[];
+    [itemRows, scheduleRows, attemptRows, planRows] = await fetchStableSnapshot(supabase, () => Promise.all([
+      fetchAllRows<LearningItemRow>((from, to) => supabase.from("learning_items").select("*").order("id").range(from, to)),
+      fetchAllRows<ScheduleStateRow>((from, to) => supabase.from("schedule_states").select("*").order("learning_item_id").order("ability").range(from, to)),
+      fetchAllRows<ReviewAttemptRow>((from, to) => supabase.from("review_attempts").select("*").gte("reviewed_at", windowStartIso).order("id").range(from, to)),
+      fetchAllRows<{ plan: DailyPlan }>((from, to) => supabase.from("daily_learning_plans").select("plan").order("id").range(from, to)),
+    ]));
   } catch (error) {
     console.error("【get_learning_context】查詢資料失敗:", {
       message: error instanceof Error ? error.message : String(error),
@@ -123,8 +127,9 @@ export async function handler(
     throw new Error(`【get_learning_context】查詢資料失敗: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const items = itemRows.map(mapLearningItemRow);
-  const scheduleStates = scheduleRows.map(mapScheduleStateRow);
+  const items = itemRows.filter(row => !row.archived_at && !row.learning_metadata?.coachReport).map(mapLearningItemRow);
+  const activeIds = new Set(items.map(item => item.id));
+  const scheduleStates = scheduleRows.filter(row => activeIds.has(row.learning_item_id)).map(mapScheduleStateRow);
   const attempts = attemptRows.map(mapReviewAttemptRow);
 
   const itemsById = new Map(items.map((item) => [item.id, item]));
@@ -141,11 +146,15 @@ export async function handler(
     const wrongAnswerCount = wrongUnits.filter((unit) => itemsById.get(unit.learningItemId)?.language === language).length;
 
     perLanguage[language] = {
-      masteryBreakdown: computeStatusCounts(items, language),
+      learningRulesVersion: 2,
+      evidence: computeLearningEvidenceStats(attempts, language, now, input.days),
+      dailyPlans: planRows.filter(row => row.plan.language === language && row.plan.date >= windowStartIso.slice(0,10)).map(({plan}) => ({ date: plan.date, timeZone: plan.timeZone, newItemCap: plan.newItemCap,
+        reservedNewWords: plan.newItemIds.length, plannedUnits: plan.units.length, completedUnits: plan.completedUnitKeys.length, reason: plan.reason, busy: plan.busy })),
+      masteryBreakdown: computeEvidenceStatusCounts(items, scheduleStates, language, attempts),
       dueCount: computeUpcomingReviewOverview(scheduleStates, language, now),
       accuracy,
       hintRate,
-      byAbility: computeAbilityStatusCounts(items, scheduleStates, language),
+      byAbility: computeAbilityStatusCounts(items, scheduleStates, language, true, attempts),
       wrongAnswerCount,
       // studyVolume 跟 accuracy/hintRate 的 sampleSize 是同一組「這個語言、這個時間窗內的
       // review_attempts 筆數」（三者共用同一個 filter），不需要重複計算一次。

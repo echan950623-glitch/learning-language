@@ -10,7 +10,8 @@
  * （combineAbilityStatuses 如何合併多能力狀態）。
  */
 
-import type { AbilityKind, LearningItem, ScheduleState } from "./types";
+import { effectiveSchedules, verificationState } from "./automaticVerification";
+import type { AbilityKind, LearningItem, ReviewAttempt, ScheduleState } from "./types";
 import { requiredAbilities } from "./abilities";
 import { isDueBy } from "./time";
 
@@ -48,9 +49,10 @@ export function buildTodayQueue(
   items: LearningItem[],
   scheduleStates: ScheduleState[],
   now: Date,
-  newItemLimit: number = DEFAULT_NEW_ITEM_SUGGESTION
+  newItemLimit: number = DEFAULT_NEW_ITEM_SUGGESTION,
+  attempts: ReviewAttempt[] = []
 ): TodayQueueResult {
-  const scheduleByKey = new Map(scheduleStates.map((s) => [scheduleKey(s.learningItemId, s.ability), s]));
+  const scheduleByKey = new Map(effectiveSchedules(items, scheduleStates, attempts).map((s) => [scheduleKey(s.learningItemId, s.ability), s]));
   const nowIsoValue = now.toISOString();
 
   const reviewUnits: TodayQueueUnit[] = [];
@@ -60,6 +62,7 @@ export function buildTodayQueue(
   const pendingAbilityUnits: TodayQueueUnit[] = [];
 
   for (const item of items) {
+    if (item.archivedAt) continue;
     const abilities = requiredAbilities(item);
     const recallSchedule = scheduleByKey.get(scheduleKey(item.id, "recall"));
 
@@ -73,10 +76,12 @@ export function buildTodayQueue(
         continue;
       }
 
+      const verification = verificationState(item, ability, scheduleStates, attempts);
+      if (verification.dueAt && !isDueBy(verification.dueAt, nowIsoValue)) continue;
       // 這個能力還沒有任何排程紀錄。
-      if (ability === "recall") {
+      if (ability === "recall" || ability === "meaning") {
         if (!recallSchedule) {
-          freshItemUnits.push({ item, ability: "recall", kind: "new" });
+          freshItemUnits.push({ item, ability, kind: "new" });
         }
         // recallSchedule 存在但這裡 schedule 卻是 undefined 不會發生（ability==="recall" 時
         // schedule 就是 recallSchedule），保留分支只是讓邏輯讀起來完整。
@@ -89,6 +94,8 @@ export function buildTodayQueue(
   }
 
   reviewUnits.sort((a, b) => {
+    const checkPriority = (u: TodayQueueUnit) => verificationState(u.item, u.ability, scheduleStates, attempts).stage === "learning" ? 1 : 0;
+    if (checkPriority(a) !== checkPriority(b)) return checkPriority(a) - checkPriority(b);
     const dueA = a.schedule?.dueAt ?? "";
     const dueB = b.schedule?.dueAt ?? "";
     if (dueA !== dueB) return dueA.localeCompare(dueB);
@@ -98,7 +105,7 @@ export function buildTodayQueue(
   // 新內容優先順序：先補齊「已經開始學、還缺一種能力」的項目，再引入全新項目，
   // 避免已經投入的項目長期卡在只學一半，同時每個「全新項目」在單一天內仍只算一次新增。
   pendingAbilityUnits.sort((a, b) => a.item.createdAt.localeCompare(b.item.createdAt));
-  freshItemUnits.sort((a, b) => a.item.createdAt.localeCompare(b.item.createdAt));
+  freshItemUnits.sort((a, b) => Number(!!b.item.practice?.learned) - Number(!!a.item.practice?.learned) || a.item.createdAt.localeCompare(b.item.createdAt));
 
   const cap = Math.max(0, Math.min(newItemLimit, DAILY_NEW_ITEM_SAFETY_CAP));
   const newUnits = [...pendingAbilityUnits, ...freshItemUnits].slice(0, cap);

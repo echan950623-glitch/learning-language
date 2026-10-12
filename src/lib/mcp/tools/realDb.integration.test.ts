@@ -18,12 +18,12 @@ import { handler as inventoryHandler } from "./getVocabularyInventory";
 import { handler as previewHandler } from "./previewVocabularyBatch";
 
 try {
-  process.loadEnvFile(".env.local");
+  if (process.env.RUN_REAL_TESTS === "1") process.loadEnvFile(".env.local");
 } catch {
   // 沒有 .env.local（例如 CI）時安全略過，交給下面的 hasCredentials 判斷負責 skip。
 }
 
-const hasCredentials = Boolean(process.env.SUPABASE_URL) && Boolean(process.env.SUPABASE_SECRET_KEY);
+const hasCredentials = process.env.RUN_REAL_TESTS === "1" && Boolean(process.env.SUPABASE_URL) && Boolean(process.env.SUPABASE_SECRET_KEY);
 const maybeDescribe = hasCredentials ? describe : describe.skip;
 
 maybeDescribe("MCP 工具 × 真實 Supabase 專案（需要 .env.local 的 SUPABASE_SECRET_KEY）", () => {
@@ -32,7 +32,7 @@ maybeDescribe("MCP 工具 × 真實 Supabase 專案（需要 .env.local 的 SUPA
   const publishableKey = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) as string;
 
-  const adminClient = createClient(supabaseUrl, secretKey, { auth: { autoRefreshToken: false, persistSession: false } });
+  let adminClient: SupabaseClient;
 
   const testEmail = `mcp-agent-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
   const testPassword = `Test-${Math.random().toString(36).slice(2, 12)}!A1`;
@@ -42,6 +42,7 @@ maybeDescribe("MCP 工具 × 真實 Supabase 專案（需要 .env.local 的 SUPA
   let scopedClient: SupabaseClient;
 
   beforeAll(async () => {
+    adminClient = createClient(supabaseUrl, secretKey, { auth: { autoRefreshToken: false, persistSession: false } });
     const { data: created, error: createError } = await adminClient.auth.admin.createUser({
       email: testEmail,
       password: testPassword,
@@ -72,7 +73,8 @@ maybeDescribe("MCP 工具 × 真實 Supabase 專案（需要 .env.local 的 SUPA
 
   afterAll(async () => {
     if (userId) {
-      await adminClient.auth.admin.deleteUser(userId);
+      const { error } = await adminClient.auth.admin.deleteUser(userId);
+      if (error) throw new Error("Temporary MCP test account cleanup failed");
     }
   });
 

@@ -28,6 +28,7 @@
  */
 
 import type { ConflictReason } from "./alias";
+import { canonicalJson } from "../../domain/learningPractice";
 import type { LearningItemRow } from "./outbox";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,15 @@ export function checkItemFieldsCompatible(remote: LearningItemRow, local: Learni
   }
   if (remote.source !== local.source) conflictingFields.push("source");
   if (remote.is_seed !== local.is_seed) conflictingFields.push("is_seed");
+  const remoteMetadata = remote.learning_metadata ?? {};
+  const localMetadata = local.learning_metadata ?? {};
+  for (const key of ["practice", "coachReport"] as const) {
+    if (canonicalJson(remoteMetadata[key] ?? null) !== canonicalJson(localMetadata[key] ?? null)) conflictingFields.push(key);
+  }
+  for (const key of ["contentVersion", "acceptedAnswers", "answerFormat", "needsUnderstanding"] as const) {
+    const fallback = key === "contentVersion" ? 1 : key === "acceptedAnswers" ? [] : key === "answerFormat" ? "vocabulary" : false;
+    if (canonicalJson(remoteMetadata[key] ?? fallback) !== canonicalJson(localMetadata[key] ?? fallback)) conflictingFields.push(key);
+  }
   return conflictingFields.length > 0 ? { compatible: false, conflictingFields } : { compatible: true };
 }
 

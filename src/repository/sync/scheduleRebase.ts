@@ -1,3 +1,4 @@
+import { accountStorage, flushAccountSnapshot } from "../accountStorage";
 /**
  * 無損重放（dynamic rebase）：處理 outbox 首筆 `sync_conflict:schedule_changed` 的一個狹窄案例。
  *
@@ -101,7 +102,7 @@ class RebaseJournalError extends Error {}
 function journalStorage(): Storage {
   if (typeof window === "undefined") throw new RebaseJournalError("no window");
   try {
-    return window.localStorage;
+    return accountStorage();
   } catch (error) {
     throw new RebaseJournalError("storage unavailable", { cause: error });
   }
@@ -130,7 +131,7 @@ function isJournalEntry(value: unknown): value is RebaseJournalEntry {
     typeof v.exerciseId === "string" &&
     typeof v.outboxEntryId === "string" &&
     typeof v.canonicalItemId === "string" &&
-    (v.ability === "recall" || v.ability === "reading") &&
+    (v.ability === "recall" || v.ability === "reading" || v.ability === "meaning") &&
     (v.localExpected === null || isSchedule(v.localExpected)) &&
     isSchedule(v.localAfter) &&
     isSchedule(v.cloudBefore) &&
@@ -211,7 +212,7 @@ function rowToSnapshot(row: ScheduleStateRow): ExpectedScheduleState {
 }
 
 function abilityForExerciseType(exerciseType: string): AbilityKind {
-  return exerciseType === "reading" ? "reading" : "recall";
+  return exerciseType === "meaning" ? "meaning" : exerciseType === "reading" ? "reading" : "recall";
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +435,7 @@ async function rebaseRecord(
       return refuse("journal_write_failed");
     }
 
+    await flushAccountSnapshot();
     const response = await supabase.rpc("record_graded_attempt", { payload: rebased });
     if (!response.error) return { kind: "applied" };
     if (isScheduleChanged(response.error)) continue; // 重放期間雲端又變動：重讀、重算，不關 CAS。
@@ -533,6 +535,7 @@ async function rebaseMark(
       return refuse("journal_write_failed");
     }
 
+    await flushAccountSnapshot();
     const response = await supabase.rpc("mark_attempt_correct", { payload: rebased });
     if (!response.error) return { kind: "applied" };
     if (isScheduleChanged(response.error)) continue;

@@ -24,10 +24,12 @@ import * as addVocabularyBatch from "@/lib/mcp/tools/addVocabularyBatch";
 import * as getLearningContext from "@/lib/mcp/tools/getLearningContext";
 import * as getVocabularyInventory from "@/lib/mcp/tools/getVocabularyInventory";
 import * as previewVocabularyBatch from "@/lib/mcp/tools/previewVocabularyBatch";
+import { getStudyProfile, previewPracticeBatch, addPracticeBatch, previewCoachReport, saveCoachReport } from "@/lib/mcp/tools/japanesePractice";
+import { previewPracticeStatus, setPracticeStatus } from "@/lib/mcp/tools/practiceStatus";
 
 export const runtime = "nodejs";
 
-const SERVER_INFO = { name: "learning-language-mcp", version: "1.0.0" };
+const SERVER_INFO = { name: "learning-language-mcp", version: "1.1.0" };
 
 /**
  * 每個工具都用 `structuredContent`（給支援 outputSchema 的 host）＋一份 JSON 文字版的
@@ -42,6 +44,11 @@ function toCallToolResult(result: unknown) {
 
 function buildMcpServer(supabase: SupabaseClient, userId: string): McpServer {
   const server = new McpServer(SERVER_INFO);
+  server.registerTool(getStudyProfile.name, getStudyProfile, async args => toCallToolResult(await getStudyProfile.handler(supabase, args)));
+  server.registerTool(previewPracticeBatch.name, previewPracticeBatch, async args => toCallToolResult(await previewPracticeBatch.handler(supabase, args)));
+  server.registerTool(addPracticeBatch.name, addPracticeBatch, async args => toCallToolResult(await addPracticeBatch.handler(supabase, userId, args)));
+  server.registerTool(previewCoachReport.name, previewCoachReport, async args => toCallToolResult(await previewCoachReport.handler(supabase, args)));
+  server.registerTool(saveCoachReport.name, saveCoachReport, async args => toCallToolResult(await saveCoachReport.handler(supabase, userId, args)));
 
   server.registerTool(
     getLearningContext.name,
@@ -91,6 +98,8 @@ function buildMcpServer(supabase: SupabaseClient, userId: string): McpServer {
     async (args) => toCallToolResult(await addVocabularyBatch.handler(supabase, userId, args))
   );
 
+  server.registerTool(previewPracticeStatus.name, {title:previewPracticeStatus.title,description:previewPracticeStatus.description,inputSchema:previewPracticeStatus.inputSchema,outputSchema:previewPracticeStatus.outputSchema,annotations:previewPracticeStatus.annotations},async args=>toCallToolResult(await previewPracticeStatus.handler(supabase,args)));
+  server.registerTool(setPracticeStatus.name, {title:setPracticeStatus.title,description:setPracticeStatus.description,inputSchema:setPracticeStatus.inputSchema,outputSchema:setPracticeStatus.outputSchema,annotations:setPracticeStatus.annotations},async args=>toCallToolResult(await setPracticeStatus.handler(supabase,userId,args)));
   return server;
 }
 

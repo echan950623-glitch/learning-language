@@ -99,6 +99,7 @@ function remoteClient(): SupabaseClient {
     review_attempts: REMOTE.attempts,
   };
   return {
+    rpc: async () => ({ data: "0", error: null }),
     from(table: string) {
       const result = { data: byTable[table] ?? [], error: null, status: 200 };
       const builder: Record<string, unknown> = {};
@@ -106,6 +107,7 @@ function remoteClient(): SupabaseClient {
       builder.eq = () => builder;
       builder.is = () => builder;
       builder.order = () => builder;
+      builder.range = () => builder;
       builder.then = (onOk: (value: unknown) => unknown, onErr?: (reason: unknown) => unknown) =>
         Promise.resolve(result).then(onOk, onErr);
       return builder;

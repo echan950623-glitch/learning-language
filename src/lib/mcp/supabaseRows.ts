@@ -17,9 +17,11 @@ import type {
   LearningItem,
   ReviewAttempt,
   ScheduleState,
+  AttemptEvidence,
 } from "@/domain/types";
 
 export interface LearningItemRow {
+  learning_metadata?: Pick<LearningItem, "contentVersion" | "acceptedAnswers" | "introducedAt" | "answerFormat" | "needsUnderstanding" | "practice" | "englishPractice" | "coachReport">;
   id: string;
   user_id: string;
   language: string;
@@ -36,11 +38,13 @@ export interface LearningItemRow {
   status: string;
   created_at: string;
   is_seed: boolean;
+  archived_at?: string | null;
   content_key: string;
   updated_at: string;
 }
 
 export interface ScheduleStateRow {
+  learning_metadata?: Pick<ScheduleState, "ruleVersion" | "evidenceStreak" | "lastEvidenceAt" | "recentFailures" | "lastPenaltySessionId">;
   user_id: string;
   learning_item_id: string;
   ability: string;
@@ -54,6 +58,7 @@ export interface ScheduleStateRow {
 }
 
 export interface ReviewAttemptRow {
+  learning_metadata?: AttemptEvidence;
   id: string;
   user_id: string;
   session_id: string;
@@ -71,6 +76,7 @@ export interface ReviewAttemptRow {
 
 export function mapLearningItemRow(row: LearningItemRow): LearningItem {
   return {
+    ...structuredClone(row.learning_metadata ?? {}),
     id: row.id,
     language: row.language as Language,
     type: row.type as ItemType,
@@ -86,11 +92,13 @@ export function mapLearningItemRow(row: LearningItemRow): LearningItem {
     status: row.status as ItemStatus,
     createdAt: row.created_at,
     isSeed: row.is_seed,
+    ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
   };
 }
 
 export function mapScheduleStateRow(row: ScheduleStateRow): ScheduleState {
   return {
+    ...structuredClone(row.learning_metadata ?? {}),
     learningItemId: row.learning_item_id,
     ability: row.ability as AbilityKind,
     language: row.language as Language,
@@ -104,6 +112,7 @@ export function mapScheduleStateRow(row: ScheduleStateRow): ScheduleState {
 
 export function mapReviewAttemptRow(row: ReviewAttemptRow): ReviewAttempt {
   return {
+    ...(row.learning_metadata ? { abilityEvidence: structuredClone(row.learning_metadata) } : {}),
     id: row.id,
     exerciseId: row.exercise_id,
     learningItemId: row.learning_item_id,

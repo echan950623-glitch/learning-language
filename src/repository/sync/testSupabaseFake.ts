@@ -86,6 +86,10 @@ type Filter = (row: Row) => boolean;
 
 class FakeQueryBuilder<T = Row> implements PromiseLike<FakeResult<T[]>> {
   private filters: Filter[] = [];
+  private page: [number, number] | null = null;
+  private orders: string[] = [];
+  order(column: string): this { this.orders.push(column); return this; }
+  range(from: number, to: number): this { this.page = [from, to]; return this; }
   private mode: "select" | "upsert" | "update" | "delete" = "select";
   private wantCount = false;
   private upsertPayload: Row[] = [];
@@ -158,8 +162,11 @@ class FakeQueryBuilder<T = Row> implements PromiseLike<FakeResult<T[]>> {
   private async execute(): Promise<FakeResult<T[]>> {
     switch (this.mode) {
       case "select": {
-        const rows = this.matching();
-        return { data: rows as unknown as T[], error: null, status: 200, count: this.wantCount ? rows.length : undefined };
+        let rows = this.matching();
+        for (const column of [...this.orders].reverse()) rows = [...rows].sort((a,b) => String(a[column]).localeCompare(String(b[column])));
+        const count = rows.length;
+        if (this.page) rows = rows.slice(this.page[0], this.page[1]+1);
+        return { data: rows as unknown as T[], error: null, status: 200, count: this.wantCount ? count : undefined };
       }
       case "upsert": {
         const result = this.table.upsert(this.upsertPayload, this.onConflictCols);
@@ -216,6 +223,7 @@ export class FakeSupabaseDatabase {
     study_sessions: new FakeTable("study_sessions", [["id"]]),
     review_attempts: new FakeTable("review_attempts", [["id"], ["session_id", "exercise_id"]]),
     user_preferences: new FakeTable("user_preferences", [["user_id"]]),
+    daily_learning_plans: new FakeTable("daily_learning_plans", [["user_id", "id"]]),
   };
 
   table(name: string): FakeTable {
@@ -380,17 +388,23 @@ export class FakeSupabaseDatabase {
 
 export interface FakeSupabaseClient {
   from(table: string): FakeQueryBuilder;
-  rpc(name: string, args: { payload: Row }): Promise<FakeResult<Row>>;
+  rpc(name: string, args?: { payload: Row }): Promise<FakeResult<Row | string>>;
   __db: FakeSupabaseDatabase;
 }
 
 /** 建立一個結構相容於 `SupabaseClient` 的假 client（呼叫端一律 `as unknown as SupabaseClient` 轉型）。 */
 export function createFakeSupabaseClient(db: FakeSupabaseDatabase = new FakeSupabaseDatabase()): FakeSupabaseClient {
+  let lastSnapshot = "", revision = 0;
   return {
     from(table: string) {
       return new FakeQueryBuilder(db.table(table));
     },
-    async rpc(name: string, args: { payload: Row }) {
+    async rpc(name: string, args: { payload: Row } = { payload: {} }) {
+      if (name === "get_learning_revision") {
+        const snapshot = JSON.stringify(Object.fromEntries(Object.entries(db.tables).map(([key, table]) => [key, table.rows])));
+        if (snapshot !== lastSnapshot) { revision += 1; lastSnapshot = snapshot; }
+        return { data: String(revision), error: null, status: 200 };
+      }
       if (name === "upsert_preferences_guarded") {
         const table = db.tables.user_preferences;
         const existing = table.rows.find((row) => row.user_id === args.payload.user_id);
@@ -423,6 +437,11 @@ export function createFakeSupabaseClient(db: FakeSupabaseDatabase = new FakeSupa
         }
         const inserted = table.upsert([args.payload], guarded.keys);
         return { data: inserted.data?.[0] ?? null, error: inserted.error, status: inserted.status };
+      }
+      if (name === "archive_learning_items_guarded") {
+        const ids = args.payload.ids as string[];
+        for (const row of db.tables.learning_items.rows) if (ids.includes(row.id as string)) row.archived_at = args.payload.archivedAt;
+        return { data: null, error: null, status: 200 };
       }
       if (name === "delete_learning_items_guarded") {
         const ids = args.payload.ids as string[];

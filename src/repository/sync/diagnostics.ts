@@ -117,6 +117,11 @@ function describeHead(entry: OutboxEntry, store: PersistedStore, aliases: AliasS
       }
       break;
     }
+    case "learning_event":
+      sessionId = entry.payload.session?.id ?? null;
+      localItemId = entry.payload.item?.id ?? null;
+      ability = entry.payload.attempt?.exercise_type === "reading" ? "reading" : "recall";
+      break;
     case "upsert_item":
       localItemId = entry.payload.id;
       break;

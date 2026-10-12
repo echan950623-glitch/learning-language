@@ -1,3 +1,7 @@
+import { accountStorage, getAccountOwner, getAccountGeneration, withDataLock, isSyncPaused, flushAccountSnapshot } from "../accountStorage";
+import { applySyncedPreferences, type StudyQuestionCount, type DailyNewItemCap } from "../../lib/studyPreferences";
+import { fetchAllRows } from "../../lib/supabase/pagination";
+import { fetchStableSnapshot } from "../../lib/supabase/snapshot";
 /**
  * 背景同步引擎：把 outbox 依序送到 Supabase（drain），並在登入／啟動時把遠端資料
  * 併回本機（pull-merge）。見 ARCHITECTURE.md「資料流總覽」。
@@ -17,10 +21,12 @@
  *   實例，等同「reload」，不需要也不應該讓這兩個 class 多長出一個 reload 方法。
  */
 
-import type { AbilityKind, LearningItem, ReviewAttempt, ScheduleState, StudySession } from "../../domain/types";
+import type { AbilityKind, LearningItem, ReviewAttempt, ScheduleState, StudySession, DailyPlan } from "../../domain/types";
 import { nowIso } from "../../domain/time";
 import {
   readPersistedStore,
+  readStoreRevision,
+  sanitizeStore,
   writePersistedStore,
   SCHEMA_VERSION,
   type PersistedStore,
@@ -58,10 +64,13 @@ import {
   translateIncomingSchedule,
   translateIncomingSession,
   translateOutgoingOperation,
+  translatePlan,
+  resolveLocalItemIdForCanonical,
 } from "./alias";
 import { buildSyncDiagnostics, type SyncDiagnostics } from "./diagnostics";
 import { restoreMissingCloudSession } from "./missingSessionRecovery";
 import { checkAlreadyApplied, rebaseScheduleConflict } from "./scheduleRebase";
+import { rebaseLearningEvent } from "./learningEventRebase";
 
 // supabase-js 的型別（Database 預設是 any），只用來標註「這是一個真正的 Supabase client」，
 // 不依賴任何尚未產生的 generated types。測試時傳入結構相容的假 client 並用
@@ -87,6 +96,8 @@ export interface SyncStatus {
   message?: string;
   /** 最近一次完整 drain 成功的時間，ISO 字串。 */
   lastSyncedAt?: string;
+  lastDownloadedAt?: string;
+  downloadError?: string | null;
 }
 
 type SyncStatusListener = (status: SyncStatus) => void;
@@ -95,7 +106,7 @@ let currentStatus: SyncStatus = { enabled: false, phase: "idle", pendingCount: 0
 const listeners = new Set<SyncStatusListener>();
 
 function setStatus(next: SyncStatus): void {
-  currentStatus = next;
+  currentStatus = { ...next, ...(next.enabled && currentStatus.enabled ? { lastDownloadedAt: next.lastDownloadedAt ?? currentStatus.lastDownloadedAt, downloadError: next.downloadError === undefined ? currentStatus.downloadError : next.downloadError } : {}) };
   for (const listener of listeners) listener(currentStatus);
 }
 
@@ -161,6 +172,7 @@ let transientDrainUserId: string | null = null;
 const usersPendingAliasRefresh = new Set<string>();
 
 async function runSupabaseCall(supabase: SupabaseClient, entry: OutboxEntry): Promise<SupabaseCallResult> {
+  await flushAccountSnapshot();
   const aliasUserId = activeConfig?.userId ?? transientDrainUserId;
   const aliases = aliasUserId ? loadAliasStore(aliasUserId) : null;
   if (aliases && entry.type === "upsert_item") {
@@ -186,8 +198,12 @@ async function runSupabaseCall(supabase: SupabaseClient, entry: OutboxEntry): Pr
   }
   const operation = aliases ? translateOutgoingOperation(entry, aliases) : entry;
   switch (operation.type) {
+    case "learning_event":
+      return supabase.rpc("commit_learning_event", { payload: operation.payload });
     case "upsert_item":
       return supabase.rpc("upsert_learning_item_guarded", { payload: operation.payload });
+    case "archive_items":
+      return supabase.rpc("archive_learning_items_guarded", { payload: operation.payload });
     case "delete_items":
       return supabase.rpc("delete_learning_items_guarded", { payload: operation.payload });
     case "upsert_schedule_state":
@@ -254,8 +270,6 @@ async function remoteItemHasProgress(supabase: SupabaseClient, userId: string, l
     supabase.from("review_attempts").select("id").eq("user_id", userId).eq("learning_item_id", learningItemId),
     supabase.from("study_sessions").select("planned_units,new_item_ids,review_item_ids").eq("user_id", userId),
   ]);
-  if (attempts.error) throw new SyncCallError(attempts.status, attempts.error.message);
-  if (sessions.error) throw new SyncCallError(sessions.status, sessions.error.message);
   if ((attempts.data ?? []).length > 0) return true;
   return ((sessions.data ?? []) as Array<Pick<StudySessionRow, "planned_units" | "new_item_ids" | "review_item_ids">>).some(
     (session) =>
@@ -480,6 +494,11 @@ async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
 
     const response = await runSupabaseCall(supabase, entry);
     if (response.error) {
+      if (replayUserId && entry.type === "learning_event" && ["attempt","correction"].includes(entry.payload.kind) &&
+        (response.error.message.includes("sync_conflict:schedule_changed") || response.error.message.includes("sync_conflict:item_version_changed"))) {
+        await rebaseLearningEvent(supabase,replayUserId,entry);
+        return { outcome:"advanced" }; // Head remains queued and is retried against the new CAS baseline.
+      }
       if (entry.type === "upsert_item" && isContentKeyConflict(response.error)) {
         return resolveContentKeyConflict(supabase, entry as OutboxEntry & { type: "upsert_item" });
       }
@@ -545,16 +564,21 @@ export async function drainOutboxFully(
   onStep?: (pendingCount: number) => void,
   userId?: string
 ): Promise<DrainOutcome> {
+  const owner = getAccountOwner(), generation = getAccountGeneration();
   return runExclusiveDrain(async () => {
     try {
       if (userId) transientDrainUserId = userId;
       sessionsRestoredThisDrain.clear();
       for (;;) {
-        const step = await drainStep(supabase);
+        if (owner !== getAccountOwner() || generation !== getAccountGeneration()) return { success: false, kind: "auth", message: "帳戶已切換，同步已停止。" };
+        const step = await withDataLock(() => drainStep(supabase));
         if (step.outcome === "empty") return { success: true };
         if (step.outcome === "failed") return { success: false, kind: step.kind, message: step.message };
         onStep?.(outboxPendingCount());
       }
+    } catch (error) {
+      if (owner !== getAccountOwner() || generation !== getAccountGeneration()) return { success: false, kind: "auth", message: "帳戶已切換，原帳戶待送紀錄已保留。" };
+      return { success: false, kind: "error", message: error instanceof Error ? error.message : "本機同步寫入失敗。" };
     } finally {
       // 直接 migration drain（沒有 activeConfig）只在這一輪暫存 userId；不可洩漏到下一個帳戶。
       transientDrainUserId = null;
@@ -617,7 +641,7 @@ export function configureSyncEngine(config: SyncEngineConfig | null): void {
 export function kick(): void {
   const epoch = configEpoch;
   const config = activeConfig;
-  if (!config || draining) return;
+  if (!config || draining || isSyncPaused()) return;
 
   draining = true;
   setStatus({ enabled: true, phase: "syncing", pendingCount: outboxPendingCount() });
@@ -625,7 +649,7 @@ export function kick(): void {
   void drainOutboxFully(config.supabase, (pending) => {
     if (epoch !== configEpoch) return;
     setStatus({ enabled: true, phase: "syncing", pendingCount: pending });
-  }).then((result) => {
+  }, config.userId).then((result) => {
     draining = false;
 
     if (epoch === configEpoch && usersPendingAliasRefresh.has(config.userId)) {
@@ -703,8 +727,9 @@ export function __resetSyncEngineForTests(): void {
 
 function outboxHasPendingItemChange(entries: OutboxEntry[], itemId: string): boolean {
   return entries.some((entry) => {
+    if (entry.type === "learning_event") return entry.payload.item?.id === itemId;
     if (entry.type === "upsert_item") return entry.payload.id === itemId;
-    if (entry.type === "delete_items") return entry.payload.ids.includes(itemId);
+    if (entry.type === "delete_items" || entry.type === "archive_items") return entry.payload.ids.includes(itemId);
     return false;
   });
 }
@@ -721,6 +746,7 @@ function outboxHasPendingScheduleChange(
   localAttemptsBeforeMerge: ReviewAttempt[]
 ): boolean {
   return entries.some((entry) => {
+    if (entry.type === "learning_event") return (entry.payload.attempt?.learning_item_id === learningItemId && entry.payload.attempt.exercise_type === ability) || !!entry.payload.schedules?.some(schedule => schedule.learning_item_id === learningItemId && schedule.ability === ability);
     if (entry.type === "upsert_schedule_state") {
       return entry.payload.learning_item_id === learningItemId && entry.payload.ability === ability;
     }
@@ -732,7 +758,7 @@ function outboxHasPendingScheduleChange(
         (a) => a.sessionId === entry.payload.session_id && a.exerciseId === entry.payload.exercise_id
       );
       if (!attempt) return false;
-      const attemptAbility: AbilityKind = attempt.exerciseType === "reading" ? "reading" : "recall";
+      const attemptAbility: AbilityKind = attempt.exerciseType === "meaning" ? "meaning" : attempt.exerciseType === "reading" ? "reading" : "recall";
       return attempt.learningItemId === learningItemId && attemptAbility === ability;
     }
     return false;
@@ -741,6 +767,7 @@ function outboxHasPendingScheduleChange(
 
 function outboxHasPendingSessionChange(entries: OutboxEntry[], sessionId: string): boolean {
   return entries.some((entry) => {
+    if (entry.type === "learning_event") return entry.payload.session?.id === sessionId;
     if (entry.type === "upsert_session") return entry.payload.id === sessionId;
     if (entry.type === "abandon_session") return entry.payload.sessionId === sessionId;
     if (entry.type === "record_graded_attempt") return entry.payload.session_id === sessionId;
@@ -752,9 +779,8 @@ function outboxHasPendingSessionChange(entries: OutboxEntry[], sessionId: string
 function outboxHasPendingAttemptCorrection(entries: OutboxEntry[], sessionId: string, exerciseId: string): boolean {
   return entries.some(
     (entry) =>
-      entry.type === "mark_attempt_correct" &&
-      entry.payload.session_id === sessionId &&
-      entry.payload.exercise_id === exerciseId
+      (entry.type === "mark_attempt_correct" && entry.payload.session_id === sessionId && entry.payload.exercise_id === exerciseId) ||
+      (entry.type === "learning_event" && entry.payload.kind === "correction" && entry.payload.attempt?.session_id === sessionId && entry.payload.attempt.exercise_id === exerciseId)
   );
 }
 
@@ -849,6 +875,7 @@ function mergeSessions(
       result: row.result,
       usedHint: row.used_hint,
       responseTimeMs: row.response_time_ms,
+      ...(row.learning_metadata ? { attemptNumber: row.learning_metadata.attemptNumber } : {}),
     }));
   }
 
@@ -901,24 +928,31 @@ function mergeReviewAttempts(
 
 /**
  * 登入時／app 啟動時已登入：抓遠端目前使用者的所有列，併回本機 store。
- * 不處理 `user_preferences`（避免這個檔案回頭依賴 `studyPreferences.ts` 造成循環
- * import——`studyPreferences.ts` 已經依賴這個檔案的 `notifyPreferencesChanged`）；
- * 偏好設定本輪只做「本機變更 → 推上雲端」單向，見交付報告的已知簡化說明。
+ * 偏好在同一個完整快照中下載；僅在沒有本機待送偏好、且下載期間設定未變時套用。
  */
-export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: string): Promise<void> {
+export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: string, isCurrent: () => boolean = () => true): Promise<void> {
+  if (isSyncPaused()) return;
+  if (getAccountOwner() !== null && getAccountOwner() !== userId) throw new Error("下載帳戶與本機資料歸屬不符，已停止同步。");
+  const epoch = getAccountGeneration();
+  const startingRevision = readStoreRevision();
+  const preferenceKeys = ["learning-language:study-preferences:v1", "learning-language:study-preferences:new-item-cap:v1"];
+  const initialPreferences = preferenceKeys.map(key => accountStorage().getItem(key));
+  const valid = () => isCurrent() && epoch === getAccountGeneration();
   setStatus({ enabled: true, phase: "syncing", pendingCount: outboxPendingCount() });
   try {
-    const [itemsRes, scheduleRes, sessionsRes, attemptsRes] = await Promise.all([
-      supabase.from("learning_items").select("*").eq("user_id", userId),
-      supabase.from("schedule_states").select("*").eq("user_id", userId),
-      supabase.from("study_sessions").select("*").eq("user_id", userId),
-      supabase.from("review_attempts").select("*").eq("user_id", userId),
-    ]);
-    if (itemsRes.error) throw new SyncCallError(itemsRes.status, itemsRes.error.message);
-    if (scheduleRes.error) throw new SyncCallError(scheduleRes.status, scheduleRes.error.message);
-    if (sessionsRes.error) throw new SyncCallError(sessionsRes.status, sessionsRes.error.message);
-    if (attemptsRes.error) throw new SyncCallError(attemptsRes.status, attemptsRes.error.message);
+    const [itemsRes, scheduleRes, sessionsRes, attemptsRes, preferencesRes, plansRes] = await fetchStableSnapshot(supabase, () => Promise.all([
+      fetchAllRows((from, to) => supabase.from("learning_items").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+      fetchAllRows((from, to) => supabase.from("schedule_states").select("*").eq("user_id", userId).order("learning_item_id").order("ability").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+      fetchAllRows((from, to) => supabase.from("study_sessions").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+      fetchAllRows((from, to) => supabase.from("review_attempts").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+      fetchAllRows((from, to) => supabase.from("user_preferences").select("*").eq("user_id", userId).order("user_id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+      fetchAllRows((from, to) => supabase.from("daily_learning_plans").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
+    ]));
 
+    if (!valid()) return;
+    await withDataLock(() => {
+    if (!valid()) return;
+    if (startingRevision !== readStoreRevision()) throw new Error("下載期間本機已有新作答或資料變更，已保留本機資料；請重試下載。");
     const current = readPersistedStore();
     const pendingEntries = listOutboxEntries();
     const aliases = loadAliasStore(userId);
@@ -926,6 +960,12 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
     const remoteSchedules = ((scheduleRes.data ?? []) as ScheduleStateRow[]).map((row) => translateIncomingSchedule(row, aliases));
     const remoteSessions = ((sessionsRes.data ?? []) as StudySessionRow[]).map((row) => translateIncomingSession(row, aliases));
     const remoteAttempts = ((attemptsRes.data ?? []) as ReviewAttemptRow[]).map((row) => translateIncomingAttempt(row, aliases));
+    const plans = new Map((current.dailyPlans ?? []).map(plan => [plan.id, plan]));
+    for (const row of plansRes.data as { plan: DailyPlan }[]) {
+      if (pendingEntries.some(entry => entry.type === "learning_event" && entry.payload.plan?.id === row.plan.id)) continue;
+      const plan = translatePlan(row.plan, id => resolveLocalItemIdForCanonical(aliases, id) ?? id);
+      plans.set(plan.id, { ...plan, reservationOwner: userId });
+    }
 
     const mergedStore: PersistedStore = {
       schemaVersion: SCHEMA_VERSION,
@@ -933,17 +973,29 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
       scheduleStates: mergeScheduleStates(current.scheduleStates, remoteSchedules, pendingEntries, current.reviewAttempts),
       studySessions: mergeSessions(current.studySessions, remoteSessions, remoteAttempts, pendingEntries),
       reviewAttempts: mergeReviewAttempts(current.reviewAttempts, remoteAttempts, pendingEntries),
+      dailyPlans: [...plans.values()],
     };
 
+    if (sanitizeStore(mergedStore).usedFallback) throw new Error("雲端資料或 session 關聯不完整，已拒絕覆蓋本機資料。");
+    const remotePreferences = preferencesRes.data[0] as { daily_question_count: StudyQuestionCount; daily_new_item_cap: DailyNewItemCap } | undefined;
+    if (remotePreferences && !pendingEntries.some(entry => entry.type === "upsert_preferences") && preferenceKeys.every((key, i) => accountStorage().getItem(key) === initialPreferences[i])) {
+      applySyncedPreferences({ dailyQuestionCount: remotePreferences.daily_question_count, dailyNewItemCap: remotePreferences.daily_new_item_cap });
+    }
     writePersistedStore(mergedStore);
-    setStatus({ enabled: true, phase: "idle", pendingCount: outboxPendingCount(), lastSyncedAt: nowIso() });
+    });
+    if (!valid()) return;
+    setStatus({ enabled: true, phase: "idle", pendingCount: outboxPendingCount(), lastDownloadedAt: nowIso(), downloadError: null });
   } catch (error) {
-    const classified = classifyError(error);
+    if (!valid()) return;
+    const classified = error instanceof SyncCallError || error instanceof TypeError
+      ? classifyError(error)
+      : { kind: "error" as const, message: error instanceof Error ? error.message : "下載失敗，稍後會重試。" };
     setStatus({
       enabled: true,
       phase: classified.kind === "offline" ? "offline" : "error",
       pendingCount: outboxPendingCount(),
       message: classified.message,
+      downloadError: classified.message,
     });
     throw error;
   }

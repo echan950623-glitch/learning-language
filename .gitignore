@@ -41,7 +41,13 @@ yarn-error.log*
 next-env.d.ts
 
 # local browser-testing artifacts (Playwright MCP snapshots)
+/output/
 .playwright-mcp/
+.playwright-cli/
+/output/playwright/
+/output/practice-*
+/output/supabase-changelog.md
+/output/jlpt-content/
 
 # private local development log
 DEVLOG.md

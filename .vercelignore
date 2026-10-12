@@ -1,0 +1,14 @@
+# Release only this checkout. Private notes, backups and nested checkouts stay local.
+.git/
+.claude/
+.agents/
+.playwright-cli/
+.playwright-mcp/
+output/
+DEVLOG.md
+.env*
+.mcp-oauth-client.local.json
+supabase/.temp/
+*.tsbuildinfo
+node_modules/
+.next/

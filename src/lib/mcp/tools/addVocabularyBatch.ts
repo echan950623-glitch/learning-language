@@ -9,6 +9,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { englishContentSchema } from "./englishContentSchema";
 
 import { generateId } from "@/domain/id";
 
@@ -45,6 +46,7 @@ const insertedItemSchema = z.object({
   romaji: z.string().optional(),
   partOfSpeech: z.string().optional(),
   exampleSentence: z.string().optional(),
+  englishPractice: englishContentSchema.optional(),
   tags: z.array(z.string()),
   language: z.enum(["ja", "en"]),
   type: z.enum(["vocabulary", "grammar", "phrase", "collocation"]),
@@ -88,6 +90,7 @@ function toInsertRow(item: ValidCandidate, userId: string, nowIso: string) {
     answer: item.answer,
     reading: item.reading ?? null,
     explanation: null,
+    ...(item.englishPractice ? {learning_metadata:{contentVersion:1,englishPractice:item.englishPractice}} : {}),
     romaji: item.romaji ?? null,
     part_of_speech: item.partOfSpeech ?? null,
     example_sentence: item.exampleSentence ?? null,
@@ -158,6 +161,7 @@ export async function handler(
       romaji: item.romaji,
       partOfSpeech: item.partOfSpeech,
       exampleSentence: item.exampleSentence,
+      englishPractice: item.englishPractice,
       tags: item.tags,
       language: item.language,
       type: item.type,

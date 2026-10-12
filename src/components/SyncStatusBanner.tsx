@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 
 import { getSyncStatus, subscribeSyncStatus, type SyncStatus } from "@/repository/sync/syncEngine";
+import { isSyncPaused, subscribeDataChanged } from "@/repository/accountStorage";
 
 const SERVER_SNAPSHOT: SyncStatus = { enabled: false, phase: "idle", pendingCount: 0 };
 
@@ -14,13 +15,16 @@ const SERVER_SNAPSHOT: SyncStatus = { enabled: false, phase: "idle", pendingCoun
  */
 export function SyncStatusBanner() {
   const status = useSyncExternalStore(subscribeSyncStatus, getSyncStatus, () => SERVER_SNAPSHOT);
+  const paused = useSyncExternalStore(subscribeDataChanged, isSyncPaused, () => false);
 
   if (!status.enabled) return null;
+  if (paused) return <div role="status" className="bg-warning-bg px-4 py-2 text-center text-xs font-medium text-warning">本機還原後同步已暫停，請到設定確認資料。</div>;
+  if (status.downloadError) return <div role="alert" className="bg-danger-bg px-4 py-2 text-center text-xs font-medium text-danger">下載需要注意：{status.downloadError}（待上傳 {status.pendingCount} 筆）</div>;
 
   if (status.phase === "idle") {
     return (
       <div role="status" className="bg-success-bg px-4 py-2 text-center text-xs font-medium text-success">
-        已同步
+        待上傳 {status.pendingCount} 筆 · {status.lastDownloadedAt ? "曾完成雲端下載" : "尚未完成雲端下載"}
       </div>
     );
   }

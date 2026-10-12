@@ -1,25 +1,32 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { EnglishProgress } from "@/components/EnglishProgress";
+import { Suspense, useEffect, useState } from "react";
 
 import type { AbilityKind, ItemStatus, LearningItem } from "@/domain/types";
 import {
   computeAbilityStatusCounts,
-  computeSevenDayAccuracy,
-  computeStatusCounts,
+  computeLearningEvidenceStats,
+  computeEvidenceStatusCounts,
+  evidenceItemStatus,
   type AccuracyResult,
   type StatusCounts,
 } from "@/domain/stats";
+import { verificationState, type VerificationState } from "@/domain/automaticVerification";
+import { vocabularyVerificationQuestions } from "@/domain/verificationContexts";
 import { buildTodayQueue } from "@/domain/queue";
-import { getRepository } from "@/repository";
+import { getRepository, subscribeDataChanged } from "@/repository";
 import { StatCard } from "@/components/StatCard";
 import { EmptyState } from "@/components/EmptyState";
+import { ResumeVocabularyButton } from "@/components/VocabularyPauseControl";
 import { SOURCE_LABELS, STATUS_LABELS } from "@/lib/labels";
 
 const ABILITY_SECTION_LABEL: Record<AbilityKind, string> = {
-  recall: "漢字練習",
-  reading: "平假名練習",
+  meaning: "意思理解",
+  recall: "詞彙回想",
+  reading: "讀音回想",
 };
 
 interface ProgressData {
@@ -28,6 +35,7 @@ interface ProgressData {
   abilityStatusCounts: Record<AbilityKind, StatusCounts>;
   accuracy: AccuracyResult;
   dueCount: number;
+  verification: Record<string, VerificationState>;
 }
 
 const STATUS_FILTERS: { value: ItemStatus | "all"; label: string }[] = [
@@ -35,32 +43,44 @@ const STATUS_FILTERS: { value: ItemStatus | "all"; label: string }[] = [
   { value: "learning", label: STATUS_LABELS.learning },
   { value: "mastered", label: STATUS_LABELS.mastered },
   { value: "struggling", label: STATUS_LABELS.struggling },
-  { value: "new", label: "未學習" },
+  { value: "new", label: "收件匣" },
 ];
 const PAGE_SIZE = 20;
 
 export default function ProgressPage() {
+ return <Suspense fallback={<p className="p-6">載入進度…</p>}><ProgressLanguage /></Suspense>;
+}
+function ProgressLanguage() {
+ const params = useSearchParams();
+ return params.get("language") === "en" ? <EnglishProgress /> : <JapaneseProgress />;
+}
+function JapaneseProgress() {
   const [data, setData] = useState<ProgressData | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<ItemStatus | "all">("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
+    const refresh = () => {
     const repository = getRepository();
     const now = new Date();
     const items = repository.listItems({ language: "ja" });
     const scheduleStates = repository.listScheduleStates({ language: "ja" });
     const attempts = repository.listReviewAttempts({ language: "ja" });
 
-    const queue = buildTodayQueue(items, scheduleStates, now, 0);
+    const queue = buildTodayQueue(items, scheduleStates, now, 0, attempts);
 
     setData({
-      items: items.filter((item) => item.type === "vocabulary").sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      statusCounts: computeStatusCounts(items, "ja"),
-      abilityStatusCounts: computeAbilityStatusCounts(items, scheduleStates, "ja"),
-      accuracy: computeSevenDayAccuracy(attempts, "ja", now),
+      items: items.filter((item) => item.type === "vocabulary").map(item => ({ ...item, status: evidenceItemStatus(item, scheduleStates) })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      statusCounts: computeEvidenceStatusCounts(items, scheduleStates, "ja", attempts),
+      abilityStatusCounts: computeAbilityStatusCounts(items, scheduleStates, "ja", true),
+      accuracy: computeLearningEvidenceStats(attempts, "ja", now).dueFirstAccuracy,
       dueCount: queue.reviewUnits.length,
+      verification: Object.fromEntries(items.map(i => [i.id, verificationState(i, "recall", scheduleStates, attempts)])),
     });
+    };
+    refresh();
+    return subscribeDataChanged(refresh);
   }, []);
 
   const query = search.trim().toLocaleLowerCase();
@@ -75,6 +95,7 @@ export default function ProgressPage() {
     <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
       <header>
         <h1 className="text-xl font-semibold text-foreground">日文進度</h1>
+        <Link href="/practice" className="mt-2 block min-h-11 text-sm text-primary underline">查看變化、文法與閱讀的分項進度</Link>
       </header>
 
       {!data ? (
@@ -89,7 +110,7 @@ export default function ProgressPage() {
               <span>項目狀態</span><span className="text-foreground-muted">{data.statusCounts.total} 項 <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span></span>
             </summary>
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <StatCard label="已接觸" value={String(data.statusCounts.total)} />
+              <StatCard label="收藏數" value={String(data.statusCounts.total)} />
               <StatCard label={STATUS_LABELS.learning} value={String(data.statusCounts.learning)} />
               <StatCard label={STATUS_LABELS.mastered} value={String(data.statusCounts.mastered)} />
               <StatCard label={STATUS_LABELS.struggling} value={String(data.statusCounts.struggling)} />
@@ -122,7 +143,7 @@ export default function ProgressPage() {
             </summary>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <StatCard
-                label="近 7 日正確率"
+                label="近七日到期首答無提示正確率"
                 value={data.accuracy.sampleSize > 0 ? `${data.accuracy.accuracyPercent}%` : "—"}
                 hint={data.accuracy.sampleSize > 0 ? `依 ${data.accuracy.sampleSize} 筆作答計算` : "近 7 天無作答紀錄"}
               />
@@ -140,8 +161,7 @@ export default function ProgressPage() {
               <div className="mt-4">
                 <EmptyState
                   title="目前沒有日文單字"
-                  description="新增單字後，就能在這裡查看。"
-                  action={<Link href="/add" className="inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">新增單字</Link>}
+                  description="請在 GPT 對話中預覽並確認加入單字，再回來查看進度。"
                 />
               </div>
             ) : (
@@ -179,9 +199,9 @@ export default function ProgressPage() {
                           <summary className="flex min-h-11 cursor-pointer list-none flex-col justify-center marker:content-none [&::-webkit-details-marker]:hidden">
                             <div className="flex items-center justify-between gap-2">
                               <span className="min-w-0 break-words text-sm font-semibold text-foreground">{item.answer}{item.reading && item.reading !== item.answer ? <span className="ml-2 font-normal text-foreground-muted">{item.reading}</span> : null}</span>
-                              <span className="shrink-0 text-xs text-foreground-muted">{item.status === "new" ? "未學習" : STATUS_LABELS[item.status]} <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span></span>
+                              <span className="shrink-0 text-xs text-foreground-muted">{STATUS_LABELS[item.status]} <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span></span>
                             </div>
-                            <p className="mt-0.5 text-xs text-foreground-muted">{item.promptZh}</p>
+                            <p className="mt-0.5 text-xs text-foreground-muted">{item.promptZh}{item.reviewPaused ? " · 已暫停出題" : ""}</p>
                           </summary>
                           <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-3 text-xs text-foreground">
                             {item.reading ? <><dt className="text-foreground-muted">讀音</dt><dd>{item.reading}</dd></> : null}
@@ -191,6 +211,12 @@ export default function ProgressPage() {
                             <dt className="text-foreground-muted">來源</dt><dd>{item.isSeed ? "系統範例" : SOURCE_LABELS[item.source]}</dd>
                             {item.tags.length > 0 ? <><dt className="text-foreground-muted">標籤</dt><dd>{item.tags.join("、")}</dd></> : null}
                           </dl>
+                          {!item.reviewPaused ? <p className="mt-3 text-xs leading-6 text-foreground-muted">
+                            跨日記憶：{data?.verification[item.id]?.stage === "verified" ? "已驗證，減少出題" : data?.verification[item.id]?.stage === "pending" ? "等待自動驗證" : "持續確認中"}<br />
+                            句中用法：{data?.verification[item.id]?.contextVerified ? "不同句子驗證通過" : vocabularyVerificationQuestions(item, "recall").length ? "待驗證" : "尚無合適驗證題"}<br />
+                            下次確認：{data?.verification[item.id]?.dueAt ? new Date(data.verification[item.id].dueAt!).toLocaleDateString("zh-TW") : "學習後自動安排"}
+                          </p> : null}
+                          {item.reviewPaused ? <ResumeVocabularyButton id={item.id} /> : null}
                         </details>
                       </li>
                     ))}

@@ -28,12 +28,12 @@ import { __clearOutboxForTests, learningItemToRow, listOutboxEntries, setOutboxE
 import { __resetSyncEngineForTests, drainOutboxFully } from "./syncEngine";
 
 try {
-  process.loadEnvFile(".env.local");
+  if (process.env.RUN_REAL_TESTS === "1") process.loadEnvFile(".env.local");
 } catch {
   // CI 沒有本機憑證時由 describe.skip 略過。
 }
 
-const hasRealCredentials =
+const hasRealCredentials = process.env.RUN_REAL_TESTS === "1" &&
   process.env.RUN_REAL_MISSING_SESSION_TEST === "1" &&
   (Boolean(process.env.SUPABASE_SECRET_KEY) || Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY));
 const describeReal = hasRealCredentials ? describe : describe.skip;
@@ -65,7 +65,7 @@ describeReal("雲端缺 session 的補送與重播（真實 Supabase 隔離帳�
   }, 30000);
 
   afterAll(async () => {
-    if (userId) await admin.auth.admin.deleteUser(userId);
+    if (userId) { const { error } = await admin.auth.admin.deleteUser(userId); if (error) throw new Error("Temporary session test account cleanup failed"); }
   }, 30000);
 
   /** 重建手機上的狀態：本機有 session 與作答、outbox 只剩 record_graded_attempt。 */

@@ -1,3 +1,4 @@
+import { accountStorage } from "../accountStorage";
 /**
  * 帳號範圍的「本機 id ←→ 雲端 canonical id」別名（alias）＋ recovery journal。
  *
@@ -30,6 +31,7 @@
 import { generateId } from "../../domain/id";
 import { nowIso } from "../../domain/time";
 import type { LearningItemRow, OutboxOperation, ReviewAttemptRow, ScheduleStateRow, StudySessionRow } from "./outbox";
+import type { DailyPlan, StudySessionPlannedUnit } from "../../domain/types";
 
 const ALIAS_KEY_PREFIX = "learning-language:sync-alias:";
 const JOURNAL_KEY_PREFIX = "learning-language:sync-alias-journal:";
@@ -98,7 +100,7 @@ function browserStorage(): Storage {
     throw new AliasPersistenceError("目前無法使用本機儲存，無法安全處理同步別名");
   }
   try {
-    return window.localStorage;
+    return accountStorage();
   } catch (error) {
     throw new AliasPersistenceError("目前無法使用本機儲存，無法安全處理同步別名", { cause: error });
   }
@@ -214,20 +216,9 @@ function foldJournal(journal: JournalEntry[]): AliasStoreSnapshot {
   return snapshot;
 }
 
-function writeCache(userId: string, snapshot: AliasStoreSnapshot): void {
-  const storage = browserStorage();
-  try {
-    storage.setItem(`${ALIAS_KEY_PREFIX}${userId}`, JSON.stringify({ schemaVersion: 1, userId, ...snapshot }));
-  } catch (error) {
-    throw new AliasPersistenceError("寫入同步別名快取失敗，已停止同步以保留資料", { cause: error });
-  }
-}
-
-/** 對外唯一的讀取入口：永遠從 journal 重新 fold（見檔案開頭「journal 為準」說明），並嘗試更新快取。 */
+/** Pure read: do not create a storage write while rendering or diagnosing. */
 export function loadAliasStore(userId: string): AliasStoreSnapshot {
-  const snapshot = foldJournal(readJournal(userId));
-  writeCache(userId, snapshot);
-  return snapshot;
+  return foldJournal(readJournal(userId));
 }
 
 // ---------------------------------------------------------------------------
@@ -324,17 +315,56 @@ function mapIds(ids: string[], snapshot: AliasStoreSnapshot): string[] {
   return ids.map((id) => resolveCanonicalItemId(snapshot, id));
 }
 
+function mapUnit(unit: StudySessionPlannedUnit, map: (id: string) => string): StudySessionPlannedUnit {
+  return { ...structuredClone(unit), learningItemId: map(unit.learningItemId),
+    ...(unit.itemSnapshot ? { itemSnapshot: { ...structuredClone(unit.itemSnapshot), id: map(unit.itemSnapshot.id) } } : {}) };
+}
+function mapSession(row: StudySessionRow, map: (id: string) => string): StudySessionRow {
+  return { ...structuredClone(row), planned_units: row.planned_units.map(unit => mapUnit(unit, map)),
+    new_item_ids: row.new_item_ids.map(map), review_item_ids: row.review_item_ids.map(map),
+    ...(row.learning_metadata ? { learning_metadata: { ...structuredClone(row.learning_metadata), understoodItemIds: row.learning_metadata.understoodItemIds?.map(map) } } : {}) };
+}
+function mapAttempt(row: ReviewAttemptRow, map: (id: string) => string): ReviewAttemptRow {
+  const evidence = row.learning_metadata;
+  return { ...structuredClone(row), learning_item_id: map(row.learning_item_id), ...(evidence ? { learning_metadata: {
+    ...structuredClone(evidence), question: { ...structuredClone(evidence.question), id: map(evidence.question.id) },
+    beforeSchedule: evidence.beforeSchedule ? { ...structuredClone(evidence.beforeSchedule), learningItemId: map(evidence.beforeSchedule.learningItemId) } : null,
+  } } : {}) };
+}
+export function translatePlan(plan: DailyPlan, map: (id: string) => string): DailyPlan {
+  return { ...structuredClone(plan), newItemIds: plan.newItemIds.map(map), units: plan.units.map(unit => mapUnit(unit, map)),
+    completedUnitKeys: plan.completedUnitKeys.map(key => { const separator = key.lastIndexOf(":"); return `${map(key.slice(0, separator))}${key.slice(separator)}`; }) };
+}
+
 /** 僅在送出網路邊界建立副本；原始 outbox 內容永遠保持本機 id。 */
 export function translateOutgoingOperation(operation: OutboxOperation, snapshot: AliasStoreSnapshot): OutboxOperation {
   switch (operation.type) {
+    case "learning_event": {
+      const map = (id: string) => resolveCanonicalItemId(snapshot, id);
+      const p = operation.payload;
+      return { ...operation, payload: { ...structuredClone(p),
+        ...(p.session ? { session: mapSession(p.session, map) } : {}),
+        ...(p.beforeSession ? { beforeSession: mapSession(p.beforeSession, map) } : {}),
+        ...(p.item ? { item: { ...structuredClone(p.item), id: map(p.item.id) } } : {}),
+        ...(p.beforeItem ? { beforeItem: { ...structuredClone(p.beforeItem), id: map(p.beforeItem.id) } } : {}),
+        ...(p.beforeSchedules ? { beforeSchedules: p.beforeSchedules.map(row => ({ ...structuredClone(row), learning_item_id: map(row.learning_item_id) })) } : {}),
+        ...(p.schedules ? { schedules: p.schedules.map(row => ({ ...structuredClone(row), learning_item_id: map(row.learning_item_id) })) } : {}),
+        ...(p.attempt ? { attempt: mapAttempt(p.attempt, map) } : {}),
+        ...(p.beforeSchedule ? { beforeSchedule: { ...structuredClone(p.beforeSchedule), learning_item_id: map(p.beforeSchedule.learning_item_id) } } : {}),
+        ...(p.schedule ? { schedule: { ...structuredClone(p.schedule), learning_item_id: map(p.schedule.learning_item_id) } } : {}),
+        ...(p.plan ? { plan: translatePlan(p.plan, map) } : {}),
+      } };
+    }
     case "upsert_item":
       return { ...operation, payload: { ...operation.payload, id: resolveCanonicalItemId(snapshot, operation.payload.id) } };
+    case "archive_items":
+      return { ...operation, payload: { ...operation.payload, ids: mapIds(operation.payload.ids, snapshot) } };
     case "delete_items":
       return { ...operation, payload: { ids: mapIds(operation.payload.ids, snapshot) } };
     case "upsert_schedule_state":
       return { ...operation, payload: { ...operation.payload, learning_item_id: resolveCanonicalItemId(snapshot, operation.payload.learning_item_id) } };
     case "upsert_review_attempt":
-      return { ...operation, payload: { ...operation.payload, learning_item_id: resolveCanonicalItemId(snapshot, operation.payload.learning_item_id) } };
+      return { ...operation, payload: mapAttempt(operation.payload, id => resolveCanonicalItemId(snapshot, id)) };
     case "record_graded_attempt":
       return {
         ...operation,
@@ -347,15 +377,7 @@ export function translateOutgoingOperation(operation: OutboxOperation, snapshot:
         },
       };
     case "upsert_session":
-      return {
-        ...operation,
-        payload: {
-          ...operation.payload,
-          planned_units: operation.payload.planned_units.map((unit) => ({ ...unit, learningItemId: resolveCanonicalItemId(snapshot, unit.learningItemId) })),
-          new_item_ids: mapIds(operation.payload.new_item_ids, snapshot),
-          review_item_ids: mapIds(operation.payload.review_item_ids, snapshot),
-        },
-      };
+      return { ...operation, payload: mapSession(operation.payload, id => resolveCanonicalItemId(snapshot, id)) };
     case "abandon_session":
     case "mark_attempt_correct":
     case "upsert_preferences":
@@ -372,17 +394,12 @@ export function translateIncomingItem(row: LearningItemRow, snapshot: AliasStore
 }
 
 export function translateIncomingAttempt(row: ReviewAttemptRow, snapshot: AliasStoreSnapshot): ReviewAttemptRow {
-  return { ...row, learning_item_id: resolveLocalItemIdForCanonical(snapshot, row.learning_item_id) ?? row.learning_item_id };
+  return mapAttempt(row, id => resolveLocalItemIdForCanonical(snapshot, id) ?? id);
 }
 
 export function translateIncomingSession(row: StudySessionRow, snapshot: AliasStoreSnapshot): StudySessionRow {
   const local = (id: string) => resolveLocalItemIdForCanonical(snapshot, id) ?? id;
-  return {
-    ...row,
-    planned_units: row.planned_units.map((unit) => ({ ...unit, learningItemId: local(unit.learningItemId) })),
-    new_item_ids: row.new_item_ids.map(local),
-    review_item_ids: row.review_item_ids.map(local),
-  };
+  return mapSession(row, local);
 }
 
 /** 只給測試使用：清空某個使用者的別名／journal，避免測試之間互相汙染。 */

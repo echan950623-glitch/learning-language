@@ -9,7 +9,8 @@
  * 當成可用的 active 狀態。
  */
 
-import type { Language, LearningItem, StudySession, StudySessionPlannedUnit } from "@/domain/types";
+import type { Language, LearningItem, StudySession, StudySessionPlannedUnit, DailyPlan } from "@/domain/types";
+import { limitVerificationUnits } from "@/domain/automaticVerification";
 import { buildTodayQueue, limitTodayQueue } from "@/domain/queue";
 import { describePersistenceError, type LearningRepository } from "@/repository";
 import {
@@ -101,7 +102,7 @@ export function evaluateSessionResume(
   const resumeIndex = session.exerciseResults.length;
   const remaining = session.plannedUnits.slice(resumeIndex);
   const hasDataGap =
-    resumeIndex > session.plannedUnits.length || remaining.some((unit) => !itemsById.has(unit.learningItemId));
+    resumeIndex > session.plannedUnits.length || remaining.some((unit) => !itemsById.has(unit.learningItemId) || !!itemsById.get(unit.learningItemId)?.coachReport || !!itemsById.get(unit.learningItemId)?.reviewPaused);
   return { canResume: !hasDataGap, resumeIndex };
 }
 
@@ -138,11 +139,12 @@ function reconcileInProgressSessions(
 ): StudySession | undefined | "abandon_failed" {
   const inProgress = repository
     .listStudySessions({ language, status: "all" })
-    .filter((session) => session.status === "in_progress");
+    .filter((session) => session.status === "in_progress" && (session.ruleVersion !== 2 || session.id === repository.getInProgressSession(language)?.id));
   if (inProgress.length === 0) return undefined;
 
   const [newest, ...stale] = inProgress;
   for (const session of stale) {
+    if (session.ruleVersion === 2) continue; // Another device's modern session is not implicitly abandoned.
     try {
       repository.abandonSession(session.id);
     } catch {
@@ -156,12 +158,14 @@ export function initializeStudySession(
   repository: LearningRepository,
   now: Date,
   questionCount: StudyQuestionCount = DEFAULT_STUDY_QUESTION_COUNT,
-  newItemCap: DailyNewItemCap = DEFAULT_DAILY_NEW_ITEM_CAP
+  newItemCap: DailyNewItemCap = DEFAULT_DAILY_NEW_ITEM_CAP,
+  dailyPlan?: DailyPlan,
+  language: Language = dailyPlan?.language ?? "ja"
 ): StudyInitResult {
-  const items = repository.listItems({ language: "ja" });
+  const items = repository.listItems({ language, includeArchived: true });
   const itemsById = new Map(items.map((item) => [item.id, item]));
 
-  const existing = reconcileInProgressSessions(repository, "ja");
+  const existing = reconcileInProgressSessions(repository, language);
   if (existing === "abandon_failed") {
     return { phase: "error", message: "無法整理進行中的學習階段，請重新整理頁面後再試一次。" };
   }
@@ -181,7 +185,17 @@ export function initializeStudySession(
     }
   }
 
-  return buildFreshSession(repository, items, itemsById, now, questionCount, newItemCap);
+  if (dailyPlan) {
+    const completed = new Set(dailyPlan.completedUnitKeys);
+    const units = limitVerificationUnits(dailyPlan.units.filter(unit => !completed.has(`${unit.learningItemId}:${unit.ability}`)), items, repository.listScheduleStates({ language }), repository.listReviewAttempts({ language }), dailyPlan.busy ? Math.min(5, questionCount) : questionCount);
+    if (!units.length) return { phase: "empty" };
+    try {
+      const session = repository.getOrCreateInProgressSession(language, units, now, { mode: "today", dailyPlanId: dailyPlan.id, timeZone: dailyPlan.timeZone });
+      return { phase: "active", itemsById, session, resumeIndex: session.exerciseResults.length };
+    } catch (error) { return { phase: "error", message: describePersistenceError(error) }; }
+  }
+  if (language === "en") return {phase:"error",message:"英文今日計畫尚未取得，請回首頁後再開始。"};
+  return buildFreshSession(repository, items, itemsById, now, questionCount, newItemCap, language);
 }
 
 function buildFreshSession(
@@ -190,11 +204,12 @@ function buildFreshSession(
   itemsById: Map<string, LearningItem>,
   now: Date,
   questionCount: StudyQuestionCount,
-  newItemCap: DailyNewItemCap
+  newItemCap: DailyNewItemCap,
+  language: Language
 ): StudyInitResult {
-  const scheduleStates = repository.listScheduleStates({ language: "ja" });
+  const scheduleStates = repository.listScheduleStates({ language });
   const queueResult = limitTodayQueue(
-    buildTodayQueue(items, scheduleStates, now, newItemCap),
+    buildTodayQueue(items, scheduleStates, now, newItemCap, repository.listReviewAttempts({ language })),
     questionCount
   );
 
@@ -202,7 +217,7 @@ function buildFreshSession(
     return { phase: "empty" };
   }
 
-  const language: Language = "ja";
+
   const plannedUnits: StudySessionPlannedUnit[] = queueResult.units.map((u) => ({
     learningItemId: u.item.id,
     ability: u.ability,
@@ -247,7 +262,7 @@ export function resolveAttemptResync(
   const unit = session.plannedUnits[index];
   if (!unit) return { kind: "reload" };
 
-  const itemsById = new Map(repository.listItems({ language }).map((item) => [item.id, item]));
+  const itemsById = new Map(repository.listItems({ language, includeArchived: true }).map((item) => [item.id, item]));
   if (!itemsById.has(unit.learningItemId)) return { kind: "reload" };
 
   return { kind: "realign", session, index };

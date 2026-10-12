@@ -1,5 +1,31 @@
 # 架構決策（第一階段）
 
+## 2026-10-08 首頁分類啟動與 MCP 內容狀態
+
+practiceSelection是純選題規則，從已確認／已引入的內容按類別、概念、能力、來源選單位，沿用Fisher–Yates及現有wrong/full/random模式。PracticeLauncher等待auth/repository初始化，啟動前在同一mutation內重新查範圍並確認現有session；StudySession仍凍結題目並處理排程。範圍選擇不改內容或每日額度。
+
+App無內容寫入表單，/add導回首頁；進度只讀。MCP新增預覽／確認已學狀態工具，RLS client以owner及原JSONB比較條件更新metadata。確認要求preview的內容版本，並行變更拒絕覆寫、同狀態重試不重複寫入；不修改題目、歷史或schedule。不需新SQL。新空訪客store不自動加入範例，既有store正常讀取。SW v23保留/practice離線導覽與query範圍，舊快取更替不碰學習資料。
+
+## 2026-10-08 日文練習與教練交接
+
+維持既有分層、StudySession、四模式與 /study。每個概念×能力是一筆 LearningItem，底層沿用 recall 交易排程；顯示與統計依 practice.capability 區分理解／產出／應用，不把它們當詞彙或聽說證據。practice v1（題目變體、可接受答案、提示、閱讀材料、內容關聯）與 coachReport v1 放既有 learning_metadata，可選欄位不重寫舊資料。
+
+japaneseConjugation 提供明確詞類的純規則；japanesePracticeCatalog 提供起始素材，其他內容由使用者／MCP預覽確認。session 建立時凍結輪換後的題目，再按概念／字詞關聯排序；遠端作答合併順序不等於時間，輪換與曝光用 reviewedAt/id 排序。曝光不足仍可作答，標記有曝光避免提高無提示證據。編輯／暫停保留原 session；未開始的 plan 移除暫停內容但不重新發放額度。規則參數是 5 個跨日成功日、最多要求 3 種題目；一題只承認一題範圍。
+
+JSONB 不保留物件欄位順序，metadata 衝突及摘要冪等核對採 canonicalJson。新欄位由執行期 guard 驗證並隨既有帳戶原子 snapshot／outbox／備份走；重大變體變更排程重設，僅暫停／啟用仍承認相同題目的歷史證據。教練摘要邏輯上排除題庫、收藏計數及排程，保留在完整匯出中。
+
+SQL 20261007155033 為舊版 PWA 相容防護：禁止教練摘要建立作答／排程；新 practice 必須有 v2 分類證據與題目快照。invoker trigger 在私有 schema，不改既有紀錄。已先完成本機 PostgreSQL 驗證，再於 2026-10-08 套用正式資料庫，遠端 migration 版本為 20261007233731（同名 japanese_practice_evidence_guard）。App／MCP 已隨後部署；不要忽略這份版本 mapping 直接重送歷史 migration。接續與實測證據見 [日文練習紀錄](docs/japanese-practice-execution.md)。
+
+## 2026-10-04 現行學習閉環
+
+保留 domain／repository／app／MCP 分層，四模式共用 StudySession。ruleVersion=2 保存模式、首答／提示／補考、原始與正規化答案、原判定、更正、题目版本及快照。learningRules 集中結果→排程轉換；replayLearningEvidence 以現版有效事件重建跨裝置證據，不猜測舊事件。
+
+IndexedDB 帳戶 envelope 原子保存 store／outbox／preferences／alias／journal，Web Locks 跨分頁互斥；owner generation 在提交前驗證，localStorage 只作相容副本。雲端每日 reservation 以 owner／date／language 共用配額，離線未取得配額不新增；deviceId 使不同裝置保留自己的進行中 session。每日計畫保存版本與理由，作答期間凍結题目。
+
+commit_learning_event 交易提交 item／session／attempt／schedule／plan 及私有冪等事件紀錄。schedule CAS 失敗時保留原事件，下載穩定完整作答快照並先寫恢復 journal，再重送同一 event ID；不丟棄任一裝置進度。重大內容編輯採版本 CAS，內容衝突拒絕自動選邊。完整分頁配合 revision RPC，下載時本機新寫入會拒絕舊快照。封存保留歷史及 active session，tombstone 傳播其他裝置。
+
+四份新增 SQL 已套用；public RPC 為 invoker、私有 definer 有 auth owner／MCP client_id 防護及空 search_path。schema 型別由已套用資料庫重新產生。原資料、flat-key 備份及還原前副本保留；遷移、恢復與驗收見 [執行紀錄](docs/learning-loop-execution.md)。下方早期模型若有衝突，以本節及執行紀錄為準。
+
 本檔只記錄「為什麼這樣做」的關鍵決策，實作細節看程式碼與其上的註解，不重複 PRODUCT_SPEC.md 的產品需求。
 
 ## 分層
@@ -854,3 +880,39 @@ RLS 自然生效，不使用 service role）
   上方「為什麼」說明），不是重新計算——這對單人個人資料是合理取捨，但代表
   這兩個 RPC **不適合**未來如果這個專案變成多人共用／教師指派他人複習計畫的
   情境下直接沿用，屆時需要重新評估是否要把 SRS 計算搬進資料庫。
+
+
+## 2026-10-02 帳戶原子快照修訂
+
+瀏覽器持久化正本改為 IndexedDB learning-language-atomic/accounts 的帳戶 envelope 交易；store、outbox、偏好、alias 與 rebase journal 共享一次提交。localStorage 保留相容與恢復副本，舊 flat keys 不移除。頁面寫入須經 mutateRepository，其他非同步寫入經 withDataLock；使用 Web Locks 與 generation 使換帳戶後舊請求失效。同步重放 journal 在 RPC 前 flush。封存保留歷史與進行中 session。細節、實際驗證與未完成限制見 [執行紀錄](docs/learning-loop-execution.md)。雲端封存 migration 僅在本機，未套用。
+### 2026-10-03 同步快照一致性與離線實測
+
+完整分頁下載以帳戶 revision RPC 前後核對，版本變動整包重抓；本機下載期間 store revision 變動即保留本機並拒絕舊下載。版本由非公開 schema trigger 在資料交易內增加，client 不能重置。同步、遷移核對、MCP context 共用此規則；需先套用 `20261003013759` SQL 才具相容性。偏好也隨完整快照下載，避免覆蓋本機待送設定。
+
+SW v19 對六個公開 static page shell 及其同源版本化資源做不帶憑證 warmup；離線以原路徑的 document 導覽避免依賴未快取 RSC。認證/API/MCP 及 private/no-store 回應仍排除。詳細已實作/未接線/未驗證範圍見 `docs/learning-loop-execution.md`。
+# 2026-10-08 選擇作答與首頁放棄
+
+`practicePresentation` 是純顯示規則，從凍結題目提供時態範圍、熟悉術語及穩定選項，不重寫已存題目。StudySession／既有評分／有限補考沿用；轉換 production/usage 為選擇題時保守使用現有 usedHint 協助欄位，不新增推進獨立回想的捷徑。此欄位目前合併提示與選項協助，非獨立 responseFormat 統計。
+
+`AbandonPracticeButton` 在帳戶 Web Lock 內核對正在進行 session ID 再呼叫既有 abandonSession。首頁同位置確認／取消、寫入錯誤與雙擊守門；不刪 attempts、schedules 或 outbox。SW shell v24，只更新 UI shell，不遷移資料；本輪無 SQL。
+
+### 2026-10-08 同步呈現調整
+RootLayout 保留 AuthSyncBootstrapper，移除 SyncStatusBanner 掛載。設定頁 AccountSyncPanel 訂閱同步狀態及帳戶資料變動，顯示還原暫停狀態；全站 DurabilityBanner 保留本機保存失敗提示。Service Worker shell 更新為 v25。
+
+### 2026-10-08 Session 單字跳過
+LearningRepository.skipVocabulary 核對 session／位置／item ID，僅移除尚未作答的同字 planned units，末題可正常完成，作答紀錄和排程不變。SyncingLearningRepository 在帳戶原子交易中保存 skip learning_event；新增 migration 20261008073457_skip_vocabulary_session.sql 以獨立 guard 驗證原 session、實際作答位置、合法單字與預期剩餘題目，事件重送冪等，public commit 其餘事件沿用原規則。正式 DB 必須先套 migration 才能部署本功能，不能讓舊 RPC 拒絕 skip 卡住 outbox。
+
+### 2026-10-08 skip 同步已啟用
+20261008073457_skip_vocabulary_session.sql 已套正式 DB（遠端版本20261008081256）；舊／新版 session 的正式SQL rollback驗證及重送冪等通過，既有筆數不變。正式 shell 已升 v26，部署證據見 docs/home-practice-execution.md。
+
+### 2026-10-10 Vocabulary pause
+Optional LearningItem.reviewPaused is persisted in existing learning_metadata JSONB through versioned edit events; no new schema/RPC migration. pauseVocabularyInSession composes skip then edit inside mutateRepository's account transaction, preserving attempts and schedules. Eligibility excludes paused words from future queues; resume evaluation rejects old remaining paused questions and retains answered history. Evidence status calculations ignore the pause flag. Progress details provide resume; study confirmation is keyed to session/index/item with rapid-tap guard. SW cache prepared as v27. SQL replay/atomicity verified locally; real authenticated sync and installed PWA are unverified.
+
+## 2026-10-11 自動驗證更新
+
+已改為系統自動安排跨日與不同題目驗證；新「這個已會」操作提出延遲驗證請求，不再永久暫停。既有暫停旗標保持不變。具體規則、資料邊界與驗收見 [自動驗證設計](docs/automatic-verification.md)。此節取代先前新按鈕永久暫停的描述。
+
+## 英文辨義（2026-10-12，本機）
+- LearningItem 的 englishPractice 保存指定詞義與預先產生的四選一變體；meaning 為獨立能力，直接／情境模式保存在作答 snapshot 中。App 不呼叫 AI。
+- 共用 StudySession、/study、repository、SRS 與 FIFO outbox；以明確 language/date 分離今日計畫。未指定參數的既有頁面仍為日文。
+- 英文狀態由目前內容的實際 evidence 投影；原 status 欄位僅保留相容用途。參見 docs/english-practice.md 與新的英文 SQL migration；本機完成不代表線上同步已可用。

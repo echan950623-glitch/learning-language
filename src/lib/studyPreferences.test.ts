@@ -10,6 +10,14 @@ import {
 } from "./studyPreferences";
 
 describe("每次學習題數設定", () => {
+  it("new-word defaults are five, while an explicit zero or legacy ten remains intact",()=>{
+    const storage=new MemoryStorage();
+    expect(readDailyNewItemCap(storage)).toBe(5);
+    storage.setItem("learning-language:study-preferences:new-item-cap:v1","0");
+    expect(readDailyNewItemCap(storage)).toBe(0);
+    storage.setItem("learning-language:study-preferences:new-item-cap:v1","10");
+    expect(readDailyNewItemCap(storage)).toBe(10);
+  });
   it("沒有設定或內容損壞時使用預設 10 題", () => {
     const storage = new MemoryStorage();
     expect(readStudyQuestionCount(storage)).toBe(DEFAULT_STUDY_QUESTION_COUNT);

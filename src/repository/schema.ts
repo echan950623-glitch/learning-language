@@ -1,3 +1,4 @@
+import { accountStorage, atomicAccountWrite } from "./accountStorage";
 /**
  * 版本化本機資料格式 + 執行期驗證。
  *
@@ -46,6 +47,7 @@ import type {
   StudySessionExerciseResult,
   StudySessionPlannedUnit,
   StudySessionStatus,
+  DailyPlan,
 } from "../domain/types";
 
 export const STORAGE_KEY = "learning-language:store";
@@ -71,7 +73,7 @@ const REVISION_KEY = `${STORAGE_KEY}:revision`;
 export function readStoreRevision(): number {
   if (typeof window === "undefined") return 0;
   try {
-    const raw = window.localStorage.getItem(REVISION_KEY);
+    const raw = accountStorage().getItem(REVISION_KEY);
     if (raw === null) return 0;
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -88,7 +90,7 @@ export function readStoreRevision(): number {
 function bumpStoreRevision(): void {
   if (typeof window === "undefined") return;
   const next = readStoreRevision() + 1;
-  window.localStorage.setItem(REVISION_KEY, String(next));
+  accountStorage().setItem(REVISION_KEY, String(next));
 }
 
 export interface PersistedStore {
@@ -97,6 +99,7 @@ export interface PersistedStore {
   scheduleStates: ScheduleState[];
   reviewAttempts: ReviewAttempt[];
   studySessions: StudySession[];
+  dailyPlans?: DailyPlan[];
 }
 
 export function createEmptyStore(): PersistedStore {
@@ -112,13 +115,11 @@ export function createEmptyStore(): PersistedStore {
  */
 export function readPersistedStore(): PersistedStore {
   if (typeof window === "undefined") return createEmptyStore();
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return createEmptyStore();
-    return sanitizeStore(JSON.parse(raw)).store;
-  } catch {
-    return createEmptyStore();
-  }
+  const raw = accountStorage().getItem(STORAGE_KEY);
+  if (raw === null) return createEmptyStore();
+  const result = sanitizeStore(JSON.parse(raw));
+  if (result.usedFallback) throw new Error("本機資料驗證失敗，已停止同步以保留原始資料。");
+  return result.store;
 }
 
 /**
@@ -128,16 +129,20 @@ export function readPersistedStore(): PersistedStore {
  */
 export function writePersistedStore(store: PersistedStore): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  bumpStoreRevision();
+  atomicAccountWrite(() => {
+    accountStorage().setItem(STORAGE_KEY, JSON.stringify(store));
+    bumpStoreRevision();
+  });
 }
 
+import { isLearningPractice, isCoachReport } from "../domain/learningPractice";
+import { isEnglishPractice } from "../domain/englishPractice";
 const LANGUAGES: Language[] = ["ja", "en"];
 const ITEM_TYPES: ItemType[] = ["vocabulary", "grammar", "phrase", "collocation"];
 const ITEM_SOURCES: ItemSource[] = ["ai", "textbook", "teacher", "song", "manual"];
 const ITEM_STATUSES: ItemStatus[] = ["new", "learning", "mastered", "struggling"];
-const EXERCISE_TYPES: ExerciseType[] = ["recall", "reading", "spelling", "translation"];
-const ABILITY_KINDS: AbilityKind[] = ["recall", "reading"];
+const EXERCISE_TYPES: ExerciseType[] = ["recall", "reading", "meaning", "spelling", "translation"];
+const ABILITY_KINDS: AbilityKind[] = ["recall", "reading", "meaning"];
 const ATTEMPT_RESULTS: AttemptResult[] = ["correct", "partial", "incorrect"];
 const SESSION_STATUSES: StudySessionStatus[] = ["in_progress", "completed", "abandoned"];
 const PLANNED_UNIT_KINDS: Array<StudySessionPlannedUnit["kind"]> = ["review", "new"];
@@ -220,6 +225,17 @@ function isPositiveInt(value: unknown): value is number {
 export function isLearningItem(value: unknown): value is LearningItem {
   if (!isRecord(value)) return false;
   return (
+    (value.englishPractice === undefined || (isEnglishPractice(value.englishPractice) && value.language === "en" && ["vocabulary", "phrase", "collocation"].includes(String(value.type)) && typeof value.partOfSpeech === "string" && value.partOfSpeech.trim().length > 0 && value.englishPractice.variants.every(v => v.mode !== "direct" || v.targetText.trim() === String(value.answer).trim()) && value.practice === undefined && value.coachReport === undefined)) &&
+    (value.practice === undefined || (isLearningPractice(value.practice) && value.language === "ja" && value.coachReport === undefined)) &&
+    (value.coachReport === undefined || (isCoachReport(value.coachReport) && value.language === "ja" && value.type === "phrase" && value.practice === undefined)) &&
+    (value.contentVersion === undefined || isPositiveInt(value.contentVersion)) &&
+    (value.answerFormat === undefined || ["vocabulary", "kanji"].includes(String(value.answerFormat))) &&
+    (value.needsUnderstanding === undefined || isBoolean(value.needsUnderstanding)) &&
+    isOptionalIsoDateString(value.autoVerificationRequestedAt) &&
+    (value.verificationQuestion === undefined || (isRecord(value.verificationQuestion) && isNonEmptyString(value.verificationQuestion.key) && isNonEmptyString(value.verificationQuestion.basePrompt) && ["context", "retention", "parallel"].includes(String(value.verificationQuestion.kind)) && isBoolean(value.verificationQuestion.novel))) &&
+    (value.reviewPaused === undefined || isBoolean(value.reviewPaused)) &&
+    (value.acceptedAnswers === undefined || isStringArray(value.acceptedAnswers)) &&
+    isOptionalIsoDateString(value.introducedAt) &&
     isNonEmptyString(value.id) &&
     LANGUAGES.includes(value.language as Language) &&
     ITEM_TYPES.includes(value.type as ItemType) &&
@@ -227,6 +243,7 @@ export function isLearningItem(value: unknown): value is LearningItem {
     isNonEmptyString(value.answer) &&
     isOptionalString(value.reading) &&
     isOptionalString(value.explanation) &&
+    (value.archivedAt === undefined || isIsoDateString(value.archivedAt)) &&
     isOptionalString(value.romaji) &&
     isOptionalString(value.partOfSpeech) &&
     isOptionalString(value.exampleSentence) &&
@@ -241,6 +258,10 @@ export function isLearningItem(value: unknown): value is LearningItem {
 export function isScheduleState(value: unknown): value is ScheduleState {
   if (!isRecord(value)) return false;
   return (
+    (value.ruleVersion === undefined || value.ruleVersion === 2) &&
+    (value.evidenceStreak === undefined || isNonNegativeInt(value.evidenceStreak)) &&
+    (value.recentFailures === undefined || isNonNegativeInt(value.recentFailures)) &&
+    isOptionalIsoDateString(value.lastEvidenceAt) && isOptionalString(value.lastPenaltySessionId) &&
     isNonEmptyString(value.learningItemId) &&
     ABILITY_KINDS.includes(value.ability as AbilityKind) &&
     LANGUAGES.includes(value.language as Language) &&
@@ -255,6 +276,7 @@ export function isScheduleState(value: unknown): value is ScheduleState {
 function isStudySessionExerciseResult(value: unknown): value is StudySessionExerciseResult {
   if (!isRecord(value)) return false;
   return (
+    (value.attemptNumber === undefined || (isNonNegativeInt(value.attemptNumber) && value.attemptNumber <= 2)) &&
     isNonEmptyString(value.exerciseId) &&
     isNonEmptyString(value.learningItemId) &&
     EXERCISE_TYPES.includes(value.exerciseType as ExerciseType) &&
@@ -267,6 +289,11 @@ function isStudySessionExerciseResult(value: unknown): value is StudySessionExer
 function isStudySessionPlannedUnit(value: unknown): value is StudySessionPlannedUnit {
   if (!isRecord(value)) return false;
   return (
+    isOptionalIsoDateString(value.recallNotBefore) &&
+    (value.attemptNumber === undefined || (isNonNegativeInt(value.attemptNumber) && value.attemptNumber <= 2)) &&
+    (value.requiresIntroduction === undefined || isBoolean(value.requiresIntroduction)) &&
+    (value.itemVersion === undefined || isPositiveInt(value.itemVersion)) &&
+    (value.itemSnapshot === undefined || (isLearningItem(value.itemSnapshot) && value.itemSnapshot.id === value.learningItemId && (value.itemSnapshot.contentVersion ?? 1) === value.itemVersion)) &&
     isNonEmptyString(value.learningItemId) &&
     ABILITY_KINDS.includes(value.ability as AbilityKind) &&
     PLANNED_UNIT_KINDS.includes(value.kind as StudySessionPlannedUnit["kind"])
@@ -276,6 +303,7 @@ function isStudySessionPlannedUnit(value: unknown): value is StudySessionPlanned
 export function isReviewAttempt(value: unknown): value is ReviewAttempt {
   if (!isRecord(value)) return false;
   return (
+    (value.abilityEvidence === undefined || isAttemptEvidence(value.abilityEvidence, value)) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.exerciseId) &&
     isNonEmptyString(value.learningItemId) &&
@@ -287,6 +315,30 @@ export function isReviewAttempt(value: unknown): value is ReviewAttempt {
     isNonNegativeInt(value.responseTimeMs) &&
     isIsoDateString(value.reviewedAt)
   );
+}
+
+function isTimeZone(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return true; } catch { return false; }
+}
+function isAttemptEvidence(value: unknown, attempt: Record<string, unknown>): boolean {
+  if (!isRecord(value)) return false;
+  return value.ruleVersion === 2 && ["today", "wrong", "full", "random"].includes(String(value.mode)) &&
+    isNonNegativeInt(value.attemptNumber) && value.attemptNumber <= 2 && isBoolean(value.wasDue) && isBoolean(value.introduced) &&
+    typeof value.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.day) && isTimeZone(value.timeZone) &&
+    typeof value.rawAnswer === "string" && typeof value.normalizedAnswer === "string" && ATTEMPT_RESULTS.includes(value.originalResult as AttemptResult) &&
+    isLearningItem(value.question) && value.question.id === attempt.learningItemId && value.question.language === attempt.language &&
+    (value.beforeSchedule === null || (isScheduleState(value.beforeSchedule) && value.beforeSchedule.learningItemId === attempt.learningItemId && value.beforeSchedule.ability === attempt.exerciseType)) &&
+    Array.isArray(value.corrections) && value.corrections.every(correction => isRecord(correction) && isNonEmptyString(correction.id) && isIsoDateString(correction.correctedAt) && ATTEMPT_RESULTS.includes(correction.result as AttemptResult));
+}
+export function isDailyPlan(value: unknown): value is DailyPlan {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.id) && typeof value.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.date) &&
+    LANGUAGES.includes(value.language as Language) && value.id === `${value.language}:${value.date}` && isTimeZone(value.timeZone) && value.ruleVersion === 2 &&
+    isNonNegativeInt(value.newItemCap) && value.newItemCap <= 50 && isStringArray(value.newItemIds) &&
+    new Set(value.newItemIds).size === value.newItemIds.length &&
+    Array.isArray(value.units) && value.units.every(isStudySessionPlannedUnit) && isStringArray(value.completedUnitKeys) &&
+    typeof value.reason === "string" && isBoolean(value.busy) && isIsoDateString(value.updatedAt);
 }
 
 /**
@@ -307,6 +359,9 @@ export function isReviewAttempt(value: unknown): value is ReviewAttempt {
  */
 export function isStudySession(value: unknown): value is StudySession {
   if (!isRecord(value)) return false;
+  if (value.ruleVersion !== undefined && (value.ruleVersion !== 2 || !["today", "wrong", "full", "random"].includes(String(value.mode)) ||
+    !isTimeZone(value.timeZone) || !isStringArray(value.understoodItemIds) || !Array.isArray(value.hintedIndices) ||
+    !value.hintedIndices.every(isNonNegativeInt) || !isOptionalString(value.dailyPlanId) || !isOptionalString(value.deviceId))) return false;
   if (
     !(
       isNonEmptyString(value.id) &&
@@ -403,7 +458,7 @@ function isLegacyStudySessionV1(value: unknown): value is LegacyStudySessionV1 {
 }
 
 function toAbilityKind(exerciseType: ExerciseType): AbilityKind {
-  return exerciseType === "reading" ? "reading" : "recall";
+  return exerciseType === "meaning" ? "meaning" : exerciseType === "reading" ? "reading" : "recall";
 }
 
 /** v1 的 ScheduleState 沒有能力分工，一律當成該項目「recall」能力的既有進度；reading 從零開始。 */
@@ -559,6 +614,7 @@ function finalizeStore(
 }
 
 function sanitizeV2Shape(raw: Record<string, unknown>): SanitizeResult {
+  const plansResult = filterValid(raw.dailyPlans ?? [], isDailyPlan);
   const itemsResult = filterValid(raw.items, isLearningItem);
   const scheduleResult = filterValid(raw.scheduleStates, isScheduleState);
   const attemptsResult = filterValid(raw.reviewAttempts, isReviewAttempt);
@@ -570,6 +626,9 @@ function sanitizeV2Shape(raw: Record<string, unknown>): SanitizeResult {
     attemptsResult.valid,
     sessionsResult.valid
   );
+  const itemIds = new Set(store.items.map(item => item.id));
+  const relatedPlans = plansResult.valid.filter(plan => plan.newItemIds.every(id => itemIds.has(id)) && plan.units.every(unit => itemIds.has(unit.learningItemId)));
+  store.dailyPlans = relatedPlans;
 
   const missingArrays = [
     itemsResult.missingArray ? "items" : null,
@@ -585,7 +644,7 @@ function sanitizeV2Shape(raw: Record<string, unknown>): SanitizeResult {
     studySessions: sessionsResult.dropped + crossRefDropped.studySessions,
   };
 
-  const usedFallback = missingArrays.length > 0 || Object.values(droppedCounts).some((n) => n > 0);
+  const usedFallback = relatedPlans.length !== plansResult.valid.length || plansResult.dropped > 0 || plansResult.missingArray || missingArrays.length > 0 || Object.values(droppedCounts).some((n) => n > 0);
 
   return { store, droppedCounts, missingArrays, usedFallback };
 }

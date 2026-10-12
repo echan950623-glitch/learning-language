@@ -1,189 +1,156 @@
 "use client";
-
 import Link from "next/link";
-import { useEffect, useState } from "react";
-
-import { computeSevenDayAccuracy, computeStatusCounts, type StatusCounts, type AccuracyResult } from "@/domain/stats";
-import { buildTodayQueue, estimateMinutes, limitTodayQueue } from "@/domain/queue";
+import { EnglishHome } from "@/components/EnglishHome";
+import { AbandonPracticeButton } from "@/components/AbandonPracticeButton";
+import {
+  PracticeStartButton,
+  usePracticeData,
+} from "@/components/PracticeLauncher";
+import {
+  PRACTICE_CATEGORIES,
+  learnedPracticeItems,
+} from "@/domain/practiceSelection";
+import { limitVerificationUnits } from "@/domain/automaticVerification";
+import { createDailyPlan, learningDay } from "@/domain/learningRules";
 import { getRepository } from "@/repository";
-import { StatCard } from "@/components/StatCard";
-import { STATUS_LABELS } from "@/lib/labels";
-import { readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
-import { buildFullReviewUnits, buildWrongAnswerUnits } from "@/domain/practice";
-
-interface HomeData {
-  dueCount: number;
-  newCount: number;
-  estimatedMinutes: number;
-  statusCounts: StatusCounts;
-  accuracy: AccuracyResult;
-  hasInProgressSession: boolean;
-  wrongCount: number;
-  encounteredCount: number;
-}
-
+import { readBusyMode, readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
+import { selectHomeLanguage, useHomeLanguage } from "@/lib/homeLanguage";
 export default function HomePage() {
-  const [data, setData] = useState<HomeData | null>(null);
-
-  useEffect(() => {
-    const repository = getRepository();
-    const now = new Date();
-    const items = repository.listItems({ language: "ja" });
-    const scheduleStates = repository.listScheduleStates({ language: "ja" });
-    const attempts = repository.listReviewAttempts({ language: "ja" });
-    const inProgressSession = repository.getInProgressSession("ja");
-
-    const questionCount = readStudyQuestionCount();
-    const newItemCap = readDailyNewItemCap();
-    const queue = limitTodayQueue(buildTodayQueue(items, scheduleStates, now, newItemCap), questionCount);
-    const statusCounts = computeStatusCounts(items, "ja");
-    const accuracy = computeSevenDayAccuracy(attempts, "ja", now);
-    const fullReviewUnits = buildFullReviewUnits(items, attempts);
-
-    setData({
-      dueCount: queue.reviewUnits.length,
-      newCount: queue.newUnits.length,
-      estimatedMinutes: estimateMinutes(queue.units.length),
-      statusCounts,
-      accuracy,
-      hasInProgressSession: Boolean(inProgressSession),
-      wrongCount: buildWrongAnswerUnits(items, attempts).length,
-      encounteredCount: new Set(fullReviewUnits.map((unit) => unit.learningItemId)).size,
-    });
-  }, []);
-
-  // 有進行中的 session 時一定能繼續（不管今天還有沒有新到期／新內容）。
-  const canStudy = data ? data.hasInProgressSession || data.dueCount + data.newCount > 0 : false;
-
+  const language = useHomeLanguage();
   return (
     <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-5 py-6">
-      <header>
-        <p className="text-xs font-medium text-foreground-muted">AI 語言學習教練・原型</p>
-        <h1 className="mt-1 text-xl font-semibold text-foreground">日文學習</h1>
-      </header>
-
-      {!data ? (
-        <div aria-live="polite" className="space-y-3">
-          <div className="h-28 animate-pulse rounded-xl bg-surface-muted" />
-          <div className="h-24 animate-pulse rounded-xl bg-surface-muted" />
-        </div>
-      ) : (
-        <>
-          <section aria-labelledby="today-summary" className="rounded-2xl border border-border bg-surface p-4">
-            <h2 id="today-summary" className="text-sm font-medium text-foreground-muted">
-              今天的學習量
-            </h2>
-            <dl className="mt-3 grid grid-cols-3 gap-3 text-center">
-              <div>
-                <dt className="text-xs text-foreground-muted">到期複習</dt>
-                <dd className="mt-1 text-2xl font-semibold tabular-nums">{data.dueCount}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-foreground-muted">建議新內容</dt>
-                <dd className="mt-1 text-2xl font-semibold tabular-nums">{data.newCount}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-foreground-muted">預估時間</dt>
-                <dd className="mt-1 text-2xl font-semibold tabular-nums">
-                  {data.estimatedMinutes}
-                  <span className="text-sm font-normal"> 分</span>
-                </dd>
-              </div>
-            </dl>
-
-            <div className="mt-4 flex flex-col gap-2">
-              {canStudy ? (
-                <Link
-                  href="/study"
-                  className="rounded-xl bg-primary px-4 py-3 text-center text-sm font-semibold text-primary-foreground transition-colors hover:opacity-90"
-                >
-                  {data?.hasInProgressSession ? "繼續今日學習" : "開始今日學習"}
-                </Link>
-              ) : (
-                <div>
-                  <button
-                    type="button"
-                    disabled
-                    className="w-full cursor-not-allowed rounded-xl bg-surface-muted px-4 py-3 text-sm font-semibold text-foreground-muted"
-                  >
-                    開始今日學習
-                  </button>
-                  <p className="mt-1 text-xs text-foreground-muted">目前沒有到期複習或新內容，先新增一個學習項目吧。</p>
-                </div>
-              )}
-              <Link
-                href="/add"
-                className="rounded-xl border border-border px-4 py-3 text-center text-sm font-medium text-foreground transition-colors hover:bg-surface-muted"
-              >
-                快速新增內容
-              </Link>
-            </div>
-          </section>
-
-          <section aria-labelledby="self-review" className="rounded-2xl border border-border bg-surface p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 id="self-review" className="text-sm font-medium text-foreground">自主複習</h2>
-                <p className="mt-1 text-xs text-foreground-muted">不用等到期，選一種方式直接練習。</p>
-              </div>
-              <Link href="/review" className="shrink-0 text-xs font-medium text-primary underline">
-                查看全部
-              </Link>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <Link
-                href="/review#wrong"
-                className="min-h-20 rounded-xl bg-danger-bg p-3 transition-opacity hover:opacity-80"
-              >
-                <span className="block text-sm font-semibold text-danger">錯題專區</span>
-                <span className="mt-1 block text-xl font-semibold tabular-nums text-foreground">{data.wrongCount}</span>
-                <span className="text-xs text-foreground-muted">待加強題目</span>
-              </Link>
-              <Link
-                href="/review#full"
-                className="min-h-20 rounded-xl bg-surface-muted p-3 transition-opacity hover:opacity-80"
-              >
-                <span className="block text-sm font-semibold text-primary">總複習</span>
-                <span className="mt-1 block text-xl font-semibold tabular-nums text-foreground">{data.encounteredCount}</span>
-                <span className="text-xs text-foreground-muted">已練過單字</span>
-              </Link>
-            </div>
-          </section>
-
-          <section aria-labelledby="status-overview" className="rounded-2xl border border-border bg-surface p-4">
-            <h2 id="status-overview" className="text-sm font-medium text-foreground-muted">
-              日文目前進度
-            </h2>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <StatCard label="已接觸" value={String(data.statusCounts.total)} />
-              <StatCard label={STATUS_LABELS.learning} value={String(data.statusCounts.learning)} />
-              <StatCard label={STATUS_LABELS.mastered} value={String(data.statusCounts.mastered)} />
-              <StatCard label={STATUS_LABELS.struggling} value={String(data.statusCounts.struggling)} />
-            </div>
-            <div className="mt-2">
-              <StatCard
-                label="近 7 日正確率"
-                value={data.accuracy.sampleSize > 0 ? `${data.accuracy.accuracyPercent}%` : "—"}
-                hint={data.accuracy.sampleSize > 0 ? `依 ${data.accuracy.sampleSize} 筆作答計算` : "近 7 天還沒有作答紀錄"}
-              />
-            </div>
-          </section>
-
-          <section aria-labelledby="english-section" className="rounded-2xl border border-dashed border-border bg-surface-muted p-4">
-            <div className="flex items-center gap-2">
-              <h2 id="english-section" className="text-sm font-medium text-foreground">
-                English
-              </h2>
-              <span className="rounded-full bg-surface px-2 py-0.5 text-xs font-medium text-foreground-muted">
-                下一階段
-              </span>
-            </div>
-            <p className="mt-1 text-sm text-foreground-muted">
-              英文的獨立進度與排程尚未開放，目前只有日文垂直切片可以實際使用。
-            </p>
-          </section>
-        </>
-      )}
+      <div role="group" aria-label="學習語言" className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-surface p-1">
+        {([{ id: "ja", label: "日文" }, { id: "en", label: "英文" }] as const).map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            aria-pressed={language === option.id}
+            onClick={() => selectHomeLanguage(option.id)}
+            className={`min-h-12 rounded-lg px-4 py-3 font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${language === option.id ? "bg-primary text-primary-foreground" : "text-foreground-muted hover:bg-background hover:text-foreground"}`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {language === "ja" ? <JapaneseHome /> : <EnglishHome />}
     </main>
+  );
+}
+
+function JapaneseHome() {
+  const { data, error } = usePracticeData();
+  const now = new Date();
+  const plan = data
+    ? createDailyPlan(
+        data.items,
+        data.schedules,
+        now,
+        readDailyNewItemCap(),
+        readBusyMode(),
+        getRepository()
+          .listDailyPlans()
+          .find((p) => p.language === "ja" && p.date === learningDay(now)),
+        undefined, data.attempts,
+      )
+    : undefined;
+  const remaining =
+    plan?.units.filter(
+      (u) =>
+        !plan.completedUnitKeys.includes(`${u.learningItemId}:${u.ability}`),
+    ).length ?? 0;
+  const roundCount = plan && data ? limitVerificationUnits(plan.units.filter(u => !plan.completedUnitKeys.includes(`${u.learningItemId}:${u.ability}`)), data.items, data.schedules, data.attempts, plan.busy ? Math.min(5, readStudyQuestionCount()) : readStudyQuestionCount()).length : 0;
+  return (
+    <div className="flex flex-col gap-5">
+      <header>
+        <h1 className="text-2xl font-semibold text-foreground">日文學習</h1>
+        <p className="mt-1 text-sm text-foreground-muted">
+          直接開始，系統會安排需要補強與到期驗證的內容。
+        </p>
+      </header>
+      {error ? (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      ) : null}
+      <section className="rounded-2xl border border-border bg-surface p-4">
+        <h2 className="font-semibold text-foreground">
+          {data?.session ? "上次還沒練完" : "今日學習"}
+        </h2>
+        <p className="mt-2 text-sm text-foreground-muted">
+          {!data
+            ? "載入進度…"
+            : data.session
+              ? `已完成 ${data.session.exerciseResults.length} / ${data.session.plannedUnits.length} 題`
+              : `這輪安排 ${roundCount} 題，系統已替你挑好。`}
+        </p>
+        {data && (data.session || remaining > 0) ? (
+          <div
+            className={`mt-3 ${data.session ? "grid grid-cols-[minmax(0,1fr)_minmax(0,0.65fr)] items-start gap-2" : ""}`}
+          >
+            <Link
+              href="/study"
+              className="block min-h-12 rounded-xl bg-primary px-4 py-3 text-center font-semibold text-primary-foreground"
+            >
+              {data.session ? "繼續上次練習" : "開始今日學習"}
+            </Link>
+            {data.session ? (
+              <AbandonPracticeButton
+                key={data.session.id}
+                sessionId={data.session.id}
+              />
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-foreground-muted">
+            {data
+              ? data.items.some((item) => !item.coachReport && !item.archivedAt)
+                ? "目前沒有待安排的題目，仍可從下方選擇自主練習。"
+                : "還沒有學習內容。請先在 GPT 預覽並確認加入，再回來開始。"
+              : ""}
+          </p>
+        )}
+        <p className="mt-2 text-xs leading-5 text-foreground-muted">
+          熟悉的內容會減少出題，之後自動驗證；每輪最多兩題，不必自己挑。
+        </p>
+      </section>
+      <section aria-labelledby="choose-practice">
+        <h2 id="choose-practice" className="mb-3 font-semibold text-foreground">
+          今天想練什麼？
+        </h2>
+        <div className="grid grid-cols-2 gap-3">
+          {PRACTICE_CATEGORIES.map((c) => (
+            <article
+              key={c.id}
+              className="flex min-w-0 flex-col gap-3 rounded-2xl border border-border bg-surface p-3"
+            >
+              <div>
+                <h3 className="font-semibold text-foreground">{c.label}</h3>
+                <p className="mt-1 text-xs leading-5 text-foreground-muted">
+                  {c.description}
+                </p>
+              </div>
+              <p className="text-xs text-foreground-muted">
+                {data
+                  ? `${learnedPracticeItems(data.items, data.attempts, data.schedules, c.id).length} 項可練`
+                  : "載入中…"}
+              </p>
+              <div className="mt-auto">
+                <PracticeStartButton category={c.id} compact />
+                <Link
+                  href={`/practice?category=${c.id}`}
+                  className="mt-1 block min-h-11 py-3 text-center text-xs font-medium text-primary"
+                >
+                  選練習範圍 ›
+                </Link>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+      <p className="text-xs leading-5 text-foreground-muted">
+        尚無內容的類別，請告訴 GPT
+        你想練什麼。新單字先從今日複習開始；自主練習不會反覆延長間隔。
+      </p>
+    </div>
   );
 }

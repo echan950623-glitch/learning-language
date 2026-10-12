@@ -4,6 +4,10 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react
 import { createBrowserClient } from "@/lib/supabase/client";
 import { getSyncDiagnostics, getSyncStatus, subscribeSyncStatus, type SyncStatus } from "@/repository/sync/syncEngine";
 
+import { refreshCloudData } from "@/repository";
+import { kick } from "@/repository/sync/syncEngine";
+import { isSyncPaused, subscribeDataChanged } from "@/repository/accountStorage";
+
 const SERVER_SNAPSHOT: SyncStatus = { enabled: false, phase: "idle", pendingCount: 0 };
 
 export function AccountSyncPanel() {
@@ -11,6 +15,7 @@ export function AccountSyncPanel() {
   const [checked, setChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sync = useSyncExternalStore(subscribeSyncStatus, getSyncStatus, () => SERVER_SNAPSHOT);
+  const paused = useSyncExternalStore(subscribeDataChanged, isSyncPaused, () => false);
   // 登入後就可展開的唯讀摘要（outbox ＋ 本機 store 結構）；狀態每次變動才重算。
   // 佇列清空之後同樣要看得到——「pendingCount 0 但學習畫面不讓作答」正是需要這份資料的情況。
   const diagnostics = useMemo(() => (sync.enabled ? getSyncDiagnostics() : null), [sync]);
@@ -45,6 +50,7 @@ export function AccountSyncPanel() {
   return (
     <section aria-labelledby="account-sync" className="rounded-2xl border border-border bg-surface p-4">
       <h2 id="account-sync" className="text-sm font-medium text-foreground">帳戶與雲端同步</h2>
+      {paused ? <p role="status" className="mt-3 text-xs text-warning">本機還原後同步已暫停，請在下方資料備份與還原區確認後恢復同步。</p> : null}
       {email ? (
         <div className="mt-3 space-y-2 text-sm">
           <p className="break-all text-foreground">已登入：{email}</p>
@@ -55,6 +61,9 @@ export function AccountSyncPanel() {
               : sync.phase === "offline" ? `離線，待同步 ${sync.pendingCount} 筆；連線恢復後自動上傳。`
               : `同步需要注意：${sync.message ?? "請稍後再試"}（待同步 ${sync.pendingCount} 筆）`}
           </p>
+          <p className="text-xs text-foreground-muted">最後下載成功：{sync.lastDownloadedAt ? new Date(sync.lastDownloadedAt).toLocaleString("zh-TW") : "尚未成功下載"}</p>
+          {sync.downloadError && <p role="alert" className="text-xs text-danger">下載錯誤：{sync.downloadError}</p>}
+          <button type="button" className="min-h-12 rounded-xl border border-border px-4" onClick={() => { kick(); refreshCloudData(); }}>手動同步</button>
           {diagnostics ? (
             <details className="text-xs text-foreground-muted">
               <summary className="cursor-pointer">同步診斷（唯讀，可截圖回報）</summary>

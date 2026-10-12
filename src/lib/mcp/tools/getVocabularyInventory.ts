@@ -4,8 +4,11 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { englishContentSchema } from "./englishContentSchema";
 
 import { mapLearningItemRow, type LearningItemRow } from "@/lib/mcp/supabaseRows";
+import { fetchAllRows } from "@/lib/supabase/pagination";
+import { fetchStableSnapshot } from "@/lib/supabase/snapshot";
 
 export const name = "get_vocabulary_inventory";
 
@@ -14,7 +17,7 @@ export const title = "取得單字庫存清單";
 export const description =
   "列出使用者目前的單字庫存（只讀，不會修改任何資料）：內容本身（依建立時間新到舊排序、" +
   "有 limit 上限避免無上限查詢）、依 content_key 找出的重複項、標籤分布、語言／類型分布。" +
-  "用來讓 AI 助理知道使用者已經有哪些字，避免建議或新增重複的內容。";
+  "用來讓 AI 助理知道使用者已經有哪些字，避免建議或新增重複的內容。英文附 englishPractice 題目變體；status 是相容欄位，能力評估請搭配 get_learning_context 的實際作答證據，不推定拼字或口說能力。";
 
 export const annotations = {
   readOnlyHint: true,
@@ -35,6 +38,7 @@ const inventoryItemSchema = z.object({
   reading: z.string().optional(),
   romaji: z.string().optional(),
   partOfSpeech: z.string().optional(),
+  englishPractice: englishContentSchema.optional(),
   tags: z.array(z.string()),
   status: z.enum(["new", "learning", "mastered", "struggling"]),
   source: z.enum(["ai", "textbook", "teacher", "song", "manual"]),
@@ -76,16 +80,11 @@ export async function handler(
   let totalCount: number;
   let rows: RowWithContentKey[];
   try {
-    const [countResult, rowsResult] = await Promise.all([
-      supabase.from("learning_items").select("id", { count: "exact", head: true }),
-      supabase.from("learning_items").select("*").order("created_at", { ascending: false }).limit(input.limit),
-    ]);
-
-    if (countResult.error) throw countResult.error;
-    if (rowsResult.error) throw rowsResult.error;
-
-    rows = (rowsResult.data ?? []) as RowWithContentKey[];
-    totalCount = countResult.count ?? rows.length;
+    const complete = await fetchStableSnapshot(supabase, () => fetchAllRows<RowWithContentKey>((from, to) =>
+      supabase.from("learning_items").select("*").order("created_at", { ascending: false }).order("id").range(from, to)));
+    const active = complete.filter(row => { const item = mapLearningItemRow(row); return !item.archivedAt && !item.coachReport; });
+    totalCount = active.length;
+    rows = active.slice(0, input.limit);
   } catch (error) {
     console.error("【get_vocabulary_inventory】查詢 learning_items 失敗:", {
       message: error instanceof Error ? error.message : String(error),
@@ -123,6 +122,7 @@ export async function handler(
       reading: item.reading,
       romaji: item.romaji,
       partOfSpeech: item.partOfSpeech,
+      englishPractice: item.englishPractice,
       tags: item.tags,
       status: item.status,
       source: item.source,

@@ -1,6 +1,6 @@
+import { accountStorage, getAccountOwner, getAccountGeneration } from "./accountStorage";
 import { BaseLearningRepository } from "./baseRepository";
 import { PersistenceFailedError } from "./errors";
-import { buildSeedItems } from "./seed";
 import {
   STORAGE_KEY,
   createEmptyStore,
@@ -24,17 +24,17 @@ function isQuotaExceededError(error: unknown): boolean {
 /** 備份原始壞資料，供事後除錯；備份本身失敗（例如容量已滿）不能讓啟動流程掛掉。 */
 function tryBackupCorruptRaw(raw: string): void {
   try {
-    window.localStorage.setItem(CORRUPT_BACKUP_KEY, raw);
+    accountStorage().setItem(CORRUPT_BACKUP_KEY, raw);
   } catch (error) {
     console.warn("[learning-language] 備份異常本機資料失敗（不影響本次啟動）", error);
   }
 }
 
 /**
- * 以 window.localStorage 持久化的實作。
+ * 以 accountStorage() 持久化的實作。
  *
  * 讀取規則：
- * - 完全沒有存檔（首次啟動）→ 建立空 store 並塞入範例種子資料。
+ * - 完全沒有存檔（首次啟動）→ 建立空 store；內容由 MCP 確認加入。
  * - 有存檔但格式合法 → 直接使用（sanitizeStore 內部仍會逐筆過濾＋跨紀錄關聯清理）。
  * - 有存檔但格式不合法（JSON 壞掉、schemaVersion 對不上、個別紀錄壞掉）→ 安全回退，
  *   不重新塞種子資料（避免和使用者已清除的狀態衝突）；JSON 壞掉或 sanitize 判定需要
@@ -51,9 +51,17 @@ export class LocalStorageLearningRepository extends BaseLearningRepository {
 
   /** 建構當下（也就是最後一次真的讀取 localStorage 那一刻）的 store revision。 */
   private lastKnownRevision: number;
+  private readonly accountOwner = getAccountOwner();
+  private readonly accountGeneration = getAccountGeneration();
 
   constructor() {
     super(LocalStorageLearningRepository.loadInitialStore());
+    this.lastKnownRevision = readStoreRevision();
+  }
+
+  captureSnapshot(): PersistedStore { return structuredClone(this.store); }
+  restoreSnapshot(snapshot: PersistedStore): void {
+    this.store = snapshot;
     this.lastKnownRevision = readStoreRevision();
   }
 
@@ -64,16 +72,13 @@ export class LocalStorageLearningRepository extends BaseLearningRepository {
   private static loadInitialStore(): PersistedStore {
     let raw: string | null = null;
     try {
-      raw = window.localStorage.getItem(STORAGE_KEY);
+      raw = accountStorage().getItem(STORAGE_KEY);
     } catch (error) {
-      console.warn("[learning-language] 讀取本機資料失敗，改用空白狀態", error);
-      return createEmptyStore();
+      throw new Error("讀取帳戶資料失敗，已停止寫入並保留原資料。", { cause: error });
     }
 
     if (raw === null) {
-      const store = createEmptyStore();
-      store.items = buildSeedItems(new Date());
-      return store;
+      return createEmptyStore();
     }
 
     let parsed: unknown;
@@ -97,6 +102,13 @@ export class LocalStorageLearningRepository extends BaseLearningRepository {
   }
 
   protected persistSnapshot(nextStore: PersistedStore): void {
+    if (this.accountOwner !== getAccountOwner() || this.accountGeneration !== getAccountGeneration()) throw new Error("帳戶已切換，舊畫面不能寫入。");
+    const existing = accountStorage().getItem(STORAGE_KEY);
+    if (existing !== null) {
+      let valid = false;
+      try { valid = !sanitizeStore(JSON.parse(existing)).usedFallback; } catch { /* Preserve raw data. */ }
+      if (!valid) throw new Error("原資料格式異常，請先匯出及檢查備份；未覆蓋原始紀錄。");
+    }
     try {
       // 透過 schema.ts 的 `writePersistedStore` 寫入（JSON.stringify 失敗會在這裡拋出），
       // 讓「主要 store 寫入」與「revision bump」永遠是同一個函式負責，不會有兩處各自

@@ -365,8 +365,8 @@ describe("runInitialMigration：偏好設定", () => {
     });
 
     expect(status.phase).toBe("completed");
-    expect(readStudyQuestionCount(storage)).toBe(15);
-    expect(readDailyNewItemCap(storage)).toBe(20);
+    expect(readStudyQuestionCount()).toBe(15);
+    expect(readDailyNewItemCap()).toBe(20);
     expect(db.tables.user_preferences.rows[0]).toMatchObject({
       daily_question_count: 15,
       daily_new_item_cap: 20,
@@ -413,8 +413,8 @@ describe("runInitialMigration：偏好設定", () => {
     });
 
     expect(status.phase).toBe("completed");
-    expect(readStudyQuestionCount(storage)).toBe(20);
-    expect(readDailyNewItemCap(storage)).toBe(5);
+    expect(readStudyQuestionCount()).toBe(20);
+    expect(readDailyNewItemCap()).toBe(5);
     expect(db.tables.user_preferences.rows[0]).toMatchObject({
       daily_question_count: 20,
       daily_new_item_cap: 5,
@@ -486,8 +486,8 @@ describe("runInitialMigration：偏好設定", () => {
     });
 
     expect(status.phase).toBe("completed");
-    expect(readStudyQuestionCount(storage)).toBe(20);
-    expect(readDailyNewItemCap(storage)).toBe(5);
+    expect(readStudyQuestionCount()).toBe(20);
+    expect(readDailyNewItemCap()).toBe(5);
     expect(db.tables.user_preferences.rows[0]).toMatchObject({
       daily_question_count: 20,
       daily_new_item_cap: 5,

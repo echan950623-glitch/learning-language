@@ -4,6 +4,7 @@
  */
 
 import type { AbilityKind, LearningItem } from "./types";
+import { isPracticeEligible } from "./learningPractice";
 
 /** 是否有「跟答案不同、值得獨立練習」的假名讀音（純假名的字讀音等於答案本身，不需要獨立 reading 能力）。 */
 export function hasUsableReading(item: LearningItem): boolean {
@@ -16,5 +17,8 @@ export function hasUsableReading(item: LearningItem): boolean {
  * - reading（漢字／日文 → 假名）只有在有獨立讀音時才需要；純假名的字只需要 recall。
  */
 export function requiredAbilities(item: LearningItem): AbilityKind[] {
+  if (!isPracticeEligible(item)) return [];
+  if (item.language === "en") return item.englishPractice ? ["meaning"] : [];
+  if (item.practice) return ["recall"];
   return hasUsableReading(item) ? ["recall", "reading"] : ["recall"];
 }

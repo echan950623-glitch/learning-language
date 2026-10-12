@@ -17,23 +17,16 @@ interface Tables {
  */
 function fakeSupabase(tables: Tables): SupabaseClient {
   return {
+    rpc: async () => ({ data: "0", error: null }),
     from(table: keyof Tables) {
-      const rows = tables[table] ?? [];
-      return {
-        select() {
-          return {
-            gte(column: string, min: string) {
-              return Promise.resolve({
-                data: rows.filter((row) => String((row as unknown as Record<string, unknown>)[column]) >= min),
-                error: null,
-              });
-            },
-            then(resolve: (value: { data: unknown; error: null }) => void, reject: (reason: unknown) => void) {
-              return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
-            },
-          };
-        },
+      let rows: (LearningItemRow | ScheduleStateRow | ReviewAttemptRow)[] = tables[table] ?? [];
+      const query = {
+        select() { return query; },
+        gte(column: string, min: string) { rows = rows.filter(row => String((row as unknown as Record<string, unknown>)[column]) >= min); return query; },
+        order() { return query; },
+        range(from: number, to: number) { return Promise.resolve({ data: rows.slice(from, to + 1), error: null }); },
       };
+      return query;
     },
   } as unknown as SupabaseClient;
 }

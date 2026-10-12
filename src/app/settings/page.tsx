@@ -8,13 +8,17 @@ import {
   DEFAULT_STUDY_QUESTION_COUNT,
   readDailyNewItemCap,
   readStudyQuestionCount,
+  readBusyMode,
+  saveBusyMode,
   saveDailyNewItemCap,
   saveStudyQuestionCount,
   STUDY_QUESTION_COUNT_OPTIONS,
   type DailyNewItemCap,
   type StudyQuestionCount,
 } from "@/lib/studyPreferences";
+import { withDataLock, subscribeDataChanged } from "@/repository/accountStorage";
 import { MigrationPanel } from "@/components/MigrationPanel";
+import { DataSafetyPanel } from "@/components/DataSafetyPanel";
 import { AccountSyncPanel } from "@/components/AccountSyncPanel";
 
 export default function SettingsPage() {
@@ -23,19 +27,25 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [newItemCap, setNewItemCap] = useState<DailyNewItemCap>(DEFAULT_DAILY_NEW_ITEM_CAP);
+  const [busy, setBusy] = useState(false);
   const [newItemCapMessage, setNewItemCapMessage] = useState<string | null>(null);
   const [newItemCapError, setNewItemCapError] = useState<string | null>(null);
 
   useEffect(() => {
+    const refresh = () => {
     setSelected(readStudyQuestionCount());
     setNewItemCap(readDailyNewItemCap());
+    setBusy(readBusyMode());
+    };
+    refresh();
+    return subscribeDataChanged(refresh);
   }, []);
 
-  function handleChange(count: StudyQuestionCount) {
+  async function handleChange(count: StudyQuestionCount) {
     setMessage(null);
     setError(null);
     try {
-      saveStudyQuestionCount(count);
+      await withDataLock(() => saveStudyQuestionCount(count));
       setSelected(count);
       setMessage(`已設定為每次 ${count} 題，下一次開始學習時生效。`);
     } catch {
@@ -43,11 +53,11 @@ export default function SettingsPage() {
     }
   }
 
-  function handleNewItemCapChange(cap: DailyNewItemCap) {
+  async function handleNewItemCapChange(cap: DailyNewItemCap) {
     setNewItemCapMessage(null);
     setNewItemCapError(null);
     try {
-      saveDailyNewItemCap(cap);
+      await withDataLock(() => saveDailyNewItemCap(cap));
       setNewItemCap(cap);
       setNewItemCapMessage(`已設定為每天最多引入 ${cap} 個新項目，下一次開始學習時生效。`);
     } catch {
@@ -64,6 +74,7 @@ export default function SettingsPage() {
 
       <AccountSyncPanel />
       <MigrationPanel />
+      <DataSafetyPanel />
 
       <section aria-labelledby="question-count" className="rounded-2xl border border-border bg-surface p-4">
         <h2 id="question-count" className="text-sm font-medium text-foreground">
@@ -101,10 +112,10 @@ export default function SettingsPage() {
 
       <section aria-labelledby="new-item-cap" className="rounded-2xl border border-border bg-surface p-4">
         <h2 id="new-item-cap" className="text-sm font-medium text-foreground">
-          每日新字上限
+          每日新字（各語言分開計算）上限
         </h2>
         <p className="mt-1 text-xs leading-5 text-foreground-muted">
-          控制「今日學習」一次最多引入幾個全新項目；到期複習不受這個上限影響，一律優先排入。
+          同一學習日跨輪共用額度；補讀音不重複計算新字。0 表示暫停新增，到期複習仍優先安排。
         </p>
 
         <div className="mt-4 grid grid-cols-3 gap-3" role="radiogroup" aria-labelledby="new-item-cap">
@@ -131,6 +142,13 @@ export default function SettingsPage() {
 
         {newItemCapMessage ? <p role="status" className="mt-3 text-xs text-success">{newItemCapMessage}</p> : null}
         {newItemCapError ? <p role="alert" className="mt-3 text-xs text-danger">{newItemCapError}</p> : null}
+        <button type="button" aria-pressed={busy} onClick={async () => {
+          try { await withDataLock(() => saveBusyMode(!busy)); setBusy(!busy); }
+          catch { setNewItemCapError("忙碌模式沒有保存，請再試一次。"); }
+        }} className="mt-4 min-h-12 w-full rounded-xl border border-border px-4 py-3 text-sm text-foreground">
+          {busy ? "忙碌模式已開啟：約 5 分鐘，只做必要複習" : "切換忙碌模式：約 5 分鐘，只做必要複習"}
+        </button>
+        <p className="mt-2 text-xs text-foreground-muted">正常日目標約 15～20 分鐘。學習時區固定 Asia/Taipei，每日 00:00 換日；進行中的題目維持原計畫。</p>
       </section>
     </main>
   );

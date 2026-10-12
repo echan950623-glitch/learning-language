@@ -242,7 +242,7 @@ describe("computeAbilityStatusCounts", () => {
       makeItem({ id: "en-1", language: "en", answer: "hello", reading: undefined }),
     ];
     const counts = computeAbilityStatusCounts(items, [], "en");
-    expect(counts.recall.total).toBe(1);
+    expect(counts.recall.total).toBe(0);
     expect(counts.reading.total).toBe(0);
   });
 
