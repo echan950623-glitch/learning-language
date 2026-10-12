@@ -291,7 +291,7 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
       throw new TypeError("network unreachable");
     });
     const { dispatch, caches } = createSandbox(fetchMock);
-    const shellCache = await caches.open("learning-language-shell-v30");
+    const shellCache = await caches.open("learning-language-shell-v31");
     await shellCache.put("/", ok("<html>home</html>"));
     await shellCache.put("/study", ok("<html>cached shell</html>"));
 
@@ -302,6 +302,16 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
     const response = await event.respondWithPromise!;
 
     expect(await response.text()).toBe("<html>cached shell</html>");
+  });
+
+  it.each(["vocabulary", "phrase", "toeic"])("英文主題 %s 離線時使用英文練習頁外殼", async (category) => {
+    const { dispatch, caches } = createSandbox(vi.fn<FetchImpl>(async () => { throw new TypeError("offline"); }));
+    const cache = await caches.open("learning-language-shell-v31");
+    await cache.put("/", ok("home shell"));
+    await cache.put("/practice/english", ok("English practice shell"));
+    const event = makeEvent(makeRequest({ url: `${ORIGIN}/practice/english?category=${category}`, mode: "navigate", destination: "document" }));
+    dispatch("fetch", event);
+    expect(await (await event.respondWithPromise!).text()).toBe("English practice shell");
   });
 
   it("離線且尚未快取任何內容時，回傳保底離線回應而不丟出例外", async () => {
@@ -320,7 +330,7 @@ describe("sw.js／導覽：network-first 與離線回退", () => {
   });
   it("未知頁面離線時不拿已快取的首頁當成成功", async () => {
     const { dispatch, caches } = createSandbox(async () => { throw new TypeError("offline"); });
-    await (await caches.open("learning-language-shell-v30")).put("/", ok("home"));
+    await (await caches.open("learning-language-shell-v31")).put("/", ok("home"));
     const event = makeEvent(makeRequest({ url: `${ORIGIN}/unknown`, mode: "navigate" }));
     dispatch("fetch", event);
     expect((await event.respondWithPromise!).status).toBe(503);
@@ -387,7 +397,7 @@ describe("sw.js／同源靜態資源：白名單快取", () => {
     const { dispatch, caches } = createSandbox(fetchMock);
     const url = `${ORIGIN}/manifest.webmanifest`;
     const headers = new Headers({ Authorization: "Bearer secret-token" });
-    await (await caches.open("learning-language-shell-v30")).put(url, ok("shared cached body"));
+    await (await caches.open("learning-language-shell-v31")).put(url, ok("shared cached body"));
     const event = makeEvent(makeRequest({ url, headers }));
 
     dispatch("fetch", event);
@@ -414,7 +424,7 @@ describe("sw.js／同源靜態資源：白名單快取", () => {
       throw new TypeError("network unreachable");
     });
     const { dispatch, caches } = createSandbox(fetchMock);
-    const cache = await caches.open("learning-language-shell-v30");
+    const cache = await caches.open("learning-language-shell-v31");
     await cache.put(url, ok("cached icon"));
 
     const event = makeEvent(makeRequest({ url, destination: "image" }));
@@ -432,7 +442,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
     const { dispatch, caches, sandbox } = createSandbox(fetchMock);
 
     await (await caches.open("learning-language-shell-v12")).put("/", ok("old"));
-    await (await caches.open("learning-language-shell-v30")).put("/", ok("current"));
+    await (await caches.open("learning-language-shell-v31")).put("/", ok("current"));
     await (await caches.open("some-unrelated-app-cache")).put("/x", ok("unrelated"));
 
     const event = makeEvent();
@@ -440,7 +450,7 @@ describe("sw.js／activate：只清自己命名規則下的舊版本快取", () 
     await event.waitUntilPromise;
 
     const remaining = await caches.keys();
-    expect(remaining).toContain("learning-language-shell-v30");
+    expect(remaining).toContain("learning-language-shell-v31");
     expect(remaining).toContain("some-unrelated-app-cache");
     expect(remaining).not.toContain("learning-language-shell-v12");
     expect(sandbox.clientsClaimed).toBe(true);
@@ -456,7 +466,7 @@ describe("sw.js／install：只預先快取可公開的靜態檔", () => {
     dispatch("install", event);
     await event.waitUntilPromise;
 
-    expect(await caches.keys()).toContain("learning-language-shell-v30");
+    expect(await caches.keys()).toContain("learning-language-shell-v31");
     expect(await findCachedEntry(caches, "/")).toBeDefined();
     expect(await findCachedEntry(caches, "/settings")).toBeDefined();
     expect(await findCachedEntry(caches, "/practice")).toBeDefined();
