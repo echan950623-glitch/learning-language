@@ -102,13 +102,16 @@ export default function StudyPage() {
 function StudyLanguage() {
   const params = useSearchParams();
   const language = params.get("language") === "en" ? "en" : "ja";
-  return <StudyScreen key={language} language={language} />;
+  const requestedArea = params.get("area");
+  const area = requestedArea === "new" || requestedArea === "review" ? requestedArea : undefined;
+  return <StudyScreen key={`${language}:${area ?? "today"}`} language={language} area={area} />;
 }
-function StudyScreen({ language }: { language: Language }) {
+function StudyScreen({ language, area }: { language: Language; area?: "new" | "review" }) {
   const router = useRouter();
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [initError, setInitError] = useState<string | null>(null);
+  const [planReason, setPlanReason] = useState<string | null>(null);
   const [quickQuizError, setQuickQuizError] = useState<string | null>(null);
   const [quickQuizStarting, setQuickQuizStarting] = useState(false);
   const quickQuizStartingRef = useRef(false);
@@ -185,7 +188,8 @@ function StudyScreen({ language }: { language: Language }) {
       if (cancelled) return;
       const plan = getRepository().getInProgressSession(language)
         ? undefined
-        : await prepareDailyPlan(new Date(), language);
+        : await prepareDailyPlan(new Date(), language, area);
+      if (!cancelled) setPlanReason(plan?.reason ?? null);
       return mutateRepository((repository) =>
         initializeStudySession(
           repository,
@@ -194,6 +198,7 @@ function StudyScreen({ language }: { language: Language }) {
           readDailyNewItemCap(),
           plan,
           language,
+          area,
         ),
       );
     };
@@ -229,7 +234,7 @@ function StudyScreen({ language }: { language: Language }) {
     return () => {
       cancelled = true;
     };
-  }, [language]);
+  }, [language, area]);
 
   async function startQuickQuiz() {
     if (quickQuizStartingRef.current) return;
@@ -571,7 +576,7 @@ function StudyScreen({ language }: { language: Language }) {
   if (phase === "error") {
     return (
       <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-        <h1 className="text-xl font-semibold text-foreground">今日學習</h1>
+        <h1 className="text-xl font-semibold text-foreground">{area === "new" ? "新字專區" : area === "review" ? "複習專區" : "今日學習"}</h1>
         <div
           role="alert"
           className="rounded-xl bg-danger-bg px-4 py-3 text-sm text-danger"
@@ -598,12 +603,12 @@ function StudyScreen({ language }: { language: Language }) {
         <EmptyState
           title={
             hasSavedItems
-              ? "目前的今日計畫已完成，或沒有需要安排的題目"
+              ? area === "review" ? "目前沒有待複習的題目" : area === "new" ? "今日新字已完成，或尚無新字內容" : "目前的今日計畫已完成，或沒有需要安排的題目"
               : language === "en" ? "收件匣還沒有英文練習內容" : "收件匣還沒有日文內容"
           }
           description={
             hasSavedItems
-              ? "新字額度與到期日仍會保留。可回首頁選擇想練的內容。"
+              ? planReason ?? "新字額度與到期日仍會保留。可回首頁選擇想練的內容。"
               : language === "en" ? "請先在 GPT 預覽並確認加入英文單字與題目變體。" : "請先在 GPT 對話中預覽並確認加入日文內容，再開始今日複習。"
           }
           action={
@@ -618,7 +623,7 @@ function StudyScreen({ language }: { language: Language }) {
         <section
           className="rounded-2xl border border-border bg-surface p-4"
           aria-labelledby="quick-quiz-title"
-          hidden={language === "en"}
+          hidden={language === "en" || !!area}
         >
           <h2
             id="quick-quiz-title"

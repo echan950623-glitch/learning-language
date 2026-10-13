@@ -1,11 +1,12 @@
 "use client";
+import { ReviewScheduleSummary } from "@/components/ReviewScheduleSummary";
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { EnglishProgress } from "@/components/EnglishProgress";
 import { Suspense, useEffect, useState } from "react";
 
-import type { AbilityKind, ItemStatus, LearningItem } from "@/domain/types";
+import type { AbilityKind, ItemStatus, LearningItem, ReviewAttempt, ScheduleState } from "@/domain/types";
 import {
   computeAbilityStatusCounts,
   computeLearningEvidenceStats,
@@ -30,6 +31,8 @@ const ABILITY_SECTION_LABEL: Record<AbilityKind, string> = {
 };
 
 interface ProgressData {
+  schedules: ScheduleState[];
+  attempts: ReviewAttempt[];
   items: LearningItem[];
   statusCounts: StatusCounts;
   abilityStatusCounts: Record<AbilityKind, StatusCounts>;
@@ -71,6 +74,8 @@ function JapaneseProgress() {
     const queue = buildTodayQueue(items, scheduleStates, now, 0, attempts);
 
     setData({
+      schedules: scheduleStates,
+      attempts,
       items: items.filter((item) => item.type === "vocabulary").map(item => ({ ...item, status: evidenceItemStatus(item, scheduleStates) })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       statusCounts: computeEvidenceStatusCounts(items, scheduleStates, "ja", attempts),
       abilityStatusCounts: computeAbilityStatusCounts(items, scheduleStates, "ja", true),
@@ -211,10 +216,11 @@ function JapaneseProgress() {
                             <dt className="text-foreground-muted">來源</dt><dd>{item.isSeed ? "系統範例" : SOURCE_LABELS[item.source]}</dd>
                             {item.tags.length > 0 ? <><dt className="text-foreground-muted">標籤</dt><dd>{item.tags.join("、")}</dd></> : null}
                           </dl>
+                          <ReviewScheduleSummary item={item} schedules={data!.schedules} attempts={data!.attempts} />
                           {!item.reviewPaused ? <p className="mt-3 text-xs leading-6 text-foreground-muted">
                             跨日記憶：{data?.verification[item.id]?.stage === "verified" ? "已驗證，減少出題" : data?.verification[item.id]?.stage === "pending" ? "等待自動驗證" : "持續確認中"}<br />
                             句中用法：{data?.verification[item.id]?.contextVerified ? "不同句子驗證通過" : vocabularyVerificationQuestions(item, "recall").length ? "待驗證" : "尚無合適驗證題"}<br />
-                            下次確認：{data?.verification[item.id]?.dueAt ? new Date(data.verification[item.id].dueAt!).toLocaleDateString("zh-TW") : "學習後自動安排"}
+                            下次確認：{data?.verification[item.id]?.stage === "verified" ? "已完成日常複習" : data?.verification[item.id]?.dueAt ? new Date(data.verification[item.id].dueAt!).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" }) : "學習後自動安排"}
                           </p> : null}
                           {item.reviewPaused ? <ResumeVocabularyButton id={item.id} /> : null}
                         </details>

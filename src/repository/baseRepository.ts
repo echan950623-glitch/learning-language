@@ -29,7 +29,7 @@ import { PersistenceFailedError } from "./errors";
 import { enqueueRetry, evidenceStatus, learningDay, scheduleEvidence, DEFAULT_LEARNING_TIME_ZONE, MIN_FRESH_RECALL_DELAY_MS } from "../domain/learningRules";
 import { accountStorage } from "./accountStorage";
 import { verificationState } from "../domain/automaticVerification";
-import { activeEnglishVariant, englishStatus, isEnglishPractice, freezeEnglishQuestion } from "../domain/englishPractice";
+import { activeEnglishVariant, englishModeVerified, englishStatus, isEnglishPractice, freezeEnglishQuestion } from "../domain/englishPractice";
 import { freezeVocabularyVerification, vocabularyVerificationQuestions } from "../domain/verificationContexts";
 import { isLearningPractice, isCoachReport, isPracticeEligible, freezePracticeQuestion, spacePracticeUnits, recentlyExposed, canonicalJson, activePracticeVariant } from "../domain/learningPractice";
 
@@ -178,7 +178,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
       item.autoVerificationRequestedAt = undefined;
       item.needsUnderstanding = true;
       for (const schedule of next.scheduleStates.filter(schedule => schedule.learningItemId === id)) Object.assign(schedule, {
-        dueAt: now.toISOString(), intervalDays: 1, streak: 0, ruleVersion: 2, evidenceStreak: 0, recentFailures: 0, lastEvidenceAt: undefined, lastPenaltySessionId: undefined,
+        dueAt: now.toISOString(), intervalDays: 1, streak: 0, ruleVersion: 2, reviewPolicy: 1, reviewStage: 0, reviewCompleted: false, evidenceStreak: 0, recentFailures: 0, lastEvidenceAt: undefined, lastPenaltySessionId: undefined,
       });
       item.status = item.introducedAt || next.scheduleStates.some(schedule => schedule.learningItemId === id) ? "learning" : "new";
     }
@@ -320,7 +320,9 @@ export abstract class BaseLearningRepository implements LearningRepository {
     const frozenUnits = plannedUnits.map(u => {
       if (!options) return { ...u };
       const item = this.store.items.find(item => item.id === u.learningItemId)!;
-      const verifying = verificationState(item, u.ability, this.store.scheduleStates, this.store.reviewAttempts).stage !== "learning";
+      const position = this.store.scheduleStates.find(s => s.learningItemId === item.id && s.ability === u.ability);
+      const verifying = verificationState(item, u.ability, this.store.scheduleStates, this.store.reviewAttempts).stage !== "learning" ||
+        (position?.reviewPolicy === 1 && (position.reviewStage ?? 0) >= 4);
       let itemSnapshot = item.englishPractice ? freezeEnglishQuestion(item, this.store.reviewAttempts, this.store.studySessions, verifying) : freezePracticeQuestion(item, this.store.reviewAttempts, exposedContent, verifying, seenQuestions);
       if (verifying && !item.practice && !item.englishPractice) {
         const seenKeys = new Set(seenQuestions.map(q => q.verificationQuestion?.key).filter((k): k is string => !!k));
@@ -577,7 +579,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
     const versionCurrent = (unit.itemVersion ?? 1) === (item.contentVersion ?? 1);
     const effectiveDue = verificationState(item, input.ability, next.scheduleStates, next.reviewAttempts).dueAt ?? previous?.dueAt;
     const wasDue = versionCurrent && !!previous && !!effectiveDue && Date.parse(effectiveDue) <= input.now.getTime();
-    const computed = versionCurrent ? scheduleEvidence(previous, { result: input.result, usedHint, attemptNumber, introduced,
+    const computed = versionCurrent ? scheduleEvidence(previous, { reviewPolicy: 1, result: input.result, usedHint, attemptNumber, introduced,
       sessionId: session.id, timeZone, now: input.now, wasDue }) : previous;
     const schedule = computed ? { ...computed, learningItemId: item.id, language: item.language, ability: input.ability } : undefined;
     const scheduleIndex = next.scheduleStates.findIndex(state => state.learningItemId === item.id && state.ability === input.ability);
@@ -586,12 +588,15 @@ export abstract class BaseLearningRepository implements LearningRepository {
     const attempt: ReviewAttempt = { id: generateId("attempt"), exerciseId: input.exerciseId, learningItemId: item.id,
       language: item.language, exerciseType: input.exerciseType, sessionId: session.id, result: input.result, usedHint,
       responseTimeMs: input.responseTimeMs, reviewedAt: input.now.toISOString(), abilityEvidence: {
-        ruleVersion: 2, mode: session.mode ?? "today", attemptNumber, wasDue,
+        ruleVersion: 2, reviewPolicy: 1, mode: session.mode ?? "today", attemptNumber, wasDue,
         introduced, day: learningDay(input.now, timeZone), timeZone, rawAnswer: input.rawAnswer ?? "", normalizedAnswer: input.normalizedAnswer ?? "",
         originalResult: input.result, question: structuredClone(unit.itemSnapshot ?? item), beforeSchedule: previous ? structuredClone(previous) : null, corrections: [],
       } };
     next.reviewAttempts.push(attempt);
-    if (item.englishPractice) item.status = englishStatus(item, next.scheduleStates, next.reviewAttempts);
+    if (item.englishPractice) {
+      if (schedule?.reviewPolicy === 1 && schedule.reviewStage === 5) schedule.reviewCompleted = englishModeVerified(item, next.reviewAttempts, "direct") && englishModeVerified(item, next.reviewAttempts, "context");
+      item.status = englishStatus(item, next.scheduleStates, next.reviewAttempts);
+    }
     session.exerciseResults.push({ exerciseId: attempt.exerciseId, learningItemId: item.id, exerciseType: input.exerciseType,
       result: input.result, usedHint, responseTimeMs: input.responseTimeMs, attemptNumber });
     session.plannedUnits = enqueueRetry(session.plannedUnits, index, input.result, usedHint);
@@ -690,19 +695,21 @@ export abstract class BaseLearningRepository implements LearningRepository {
       const evidence = attempt.abilityEvidence;
       const computed = (evidence.question.contentVersion ?? 1) !== (item.contentVersion ?? 1)
         ? next.scheduleStates.find(state => state.learningItemId === item.id && state.ability === ability)
-        : scheduleEvidence(evidence.beforeSchedule ?? undefined, { result: "correct", usedHint: attempt.usedHint,
+        : scheduleEvidence(evidence.beforeSchedule ?? undefined, { reviewPolicy: evidence.reviewPolicy, wasDue: evidence.wasDue, result: "correct", usedHint: attempt.usedHint,
         attemptNumber: evidence.attemptNumber, introduced: evidence.introduced, sessionId: session.id,
         timeZone: evidence.timeZone, now: new Date(attempt.reviewedAt) });
       const schedule = computed ? { ...computed, learningItemId: item.id, language: item.language, ability } : undefined;
       const scheduleIndex = next.scheduleStates.findIndex(state => state.learningItemId === item.id && state.ability === ability);
       if (schedule) { if (scheduleIndex < 0) next.scheduleStates.push(schedule); else next.scheduleStates[scheduleIndex] = schedule; }
       attempt.result = "correct";
+      if (schedule?.reviewPolicy === 1 && schedule.reviewStage === 5 && item.englishPractice) schedule.reviewCompleted = englishModeVerified(item, next.reviewAttempts, "direct") && englishModeVerified(item, next.reviewAttempts, "context");
       evidence.corrections.push({ id: generateId("correction"), correctedAt: nowIso(), result: "correct" });
       session.exerciseResults[session.exerciseResults.length - 1].result = "correct";
       session.plannedUnits = session.plannedUnits.filter((unit, index) => index < session.exerciseResults.length ||
         !(unit.learningItemId === item.id && unit.ability === ability && (unit.attemptNumber ?? 0) === evidence.attemptNumber + 1));
       if (session.exerciseResults.length === session.plannedUnits.length) { session.status = "completed"; session.completedAt = attempt.reviewedAt; }
       item.status = combineAbilityStatuses(requiredAbilities({ ...item, reviewPaused: false }).map(kind => evidenceStatus(next.scheduleStates.find(state => state.learningItemId === item.id && state.ability === kind))));
+      if (item.englishPractice) item.status = englishStatus(item, next.scheduleStates, next.reviewAttempts);
       this.commit(next);
       return { schedule: schedule ?? { learningItemId: item.id, language: item.language, ability, dueAt: attempt.reviewedAt, intervalDays: 1, streak: 0, lapseCount: 0 }, itemStatus: item.status,
         attempt: structuredClone(attempt), session: this.cloneSession(session) };

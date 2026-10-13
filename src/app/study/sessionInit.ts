@@ -11,6 +11,7 @@
 
 import type { Language, LearningItem, StudySession, StudySessionPlannedUnit, DailyPlan } from "@/domain/types";
 import { limitVerificationUnits } from "@/domain/automaticVerification";
+import { dailyAreaUnits, type DailyStudyArea } from "@/domain/dailyStudyAreas";
 import { buildTodayQueue, limitTodayQueue } from "@/domain/queue";
 import { describePersistenceError, type LearningRepository } from "@/repository";
 import {
@@ -160,7 +161,8 @@ export function initializeStudySession(
   questionCount: StudyQuestionCount = DEFAULT_STUDY_QUESTION_COUNT,
   newItemCap: DailyNewItemCap = DEFAULT_DAILY_NEW_ITEM_CAP,
   dailyPlan?: DailyPlan,
-  language: Language = dailyPlan?.language ?? "ja"
+  language: Language = dailyPlan?.language ?? "ja",
+  area?: DailyStudyArea,
 ): StudyInitResult {
   const items = repository.listItems({ language, includeArchived: true });
   const itemsById = new Map(items.map((item) => [item.id, item]));
@@ -187,7 +189,7 @@ export function initializeStudySession(
 
   if (dailyPlan) {
     const completed = new Set(dailyPlan.completedUnitKeys);
-    const units = limitVerificationUnits(dailyPlan.units.filter(unit => !completed.has(`${unit.learningItemId}:${unit.ability}`)), items, repository.listScheduleStates({ language }), repository.listReviewAttempts({ language }), dailyPlan.busy ? Math.min(5, questionCount) : questionCount);
+    const units = area ? dailyAreaUnits(dailyPlan, area) : limitVerificationUnits(dailyPlan.units.filter(unit => !completed.has(`${unit.learningItemId}:${unit.ability}`)), items, repository.listScheduleStates({ language }), repository.listReviewAttempts({ language }), dailyPlan.busy ? Math.min(5, questionCount) : questionCount);
     if (!units.length) return { phase: "empty" };
     try {
       const session = repository.getOrCreateInProgressSession(language, units, now, { mode: "today", dailyPlanId: dailyPlan.id, timeZone: dailyPlan.timeZone });

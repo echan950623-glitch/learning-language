@@ -45,6 +45,38 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await db.close(); });
 
+it("the deployed SQL contracts accept fixed review stages and completion without schema changes", async () => {
+  await db.exec("begin;");
+  try {
+    const repository = new MemoryLearningRepository(), start = new Date();
+    const item = repository.addItem(getEnglishPracticeCatalog()[0]);
+    await db.exec(`set role authenticated; select set_config('request.jwt.claim.sub','${B}',false);`);
+    await db.query("select public.upsert_learning_item_guarded($1::jsonb)", [learningItemToRow(item, B)]);
+    const plan = repository.saveDailyPlan(createDailyPlan([item], [], start, 5, false, undefined, undefined, [], "en"));
+    await db.query("select public.reserve_daily_plan($1::jsonb)", [plan]);
+    for (const [index, elapsed] of [0, 1, 4, 9, 16, 30].entries()) {
+      const now = new Date(start.getTime() + elapsed * 86_400_000);
+      let session = repository.getOrCreateInProgressSession("en", index === 0 ? plan.units : [{ learningItemId: item.id, ability: "meaning", kind: "review" }], now, { mode: "today", ...(index === 0 ? { dailyPlanId: plan.id, timeZone: plan.timeZone } : {}) });
+      await db.query("select public.upsert_study_session_guarded($1::jsonb)", [studySessionToRow(session, B)]);
+      if (index === 0) {
+        const introduced = repository.acknowledgeIntroduction(session.id, item.id, now, true);
+        await db.query("select public.commit_learning_event($1::jsonb)", [{ id: "fixed-review-intro", kind: "introduction", beforeSession: studySessionToRow(session, B), session: studySessionToRow(introduced, B), item: learningItemToRow(repository.getItem(item.id)!, B) }]);
+        session = introduced;
+      }
+      const previous = repository.listScheduleStates({ language: "en" })[0];
+      const variant = activeEnglishVariant(session.plannedUnits[0].itemSnapshot!)!;
+      const rawAnswer = variant.choices.find(c => c.id === variant.correctChoiceId)!.text;
+      const result = repository.recordGradedAttempt({ sessionId: session.id, learningItemId: item.id, ability: "meaning", exerciseType: "meaning", exerciseId: `fixed-review-${index}`, result: "correct", usedHint: false, responseTimeMs: 100, rawAnswer, normalizedAnswer: rawAnswer, now });
+      const event: LearningEventPayload = { id: `fixed-review-event-${index}`, kind: "attempt", beforeSession: studySessionToRow(session, B), session: studySessionToRow(result.session, B), item: learningItemToRow(repository.getItem(item.id)!, B), attempt: reviewAttemptToRow(result.attempt, 0, B), beforeSchedule: previous ? scheduleStateToRow(previous, B) : null, schedule: scheduleStateToRow(result.schedule, B), ...(index === 0 ? { plan: repository.listDailyPlans()[0] } : {}) };
+      await db.query("select public.commit_learning_event($1::jsonb)", [event]);
+      await db.query("select public.commit_learning_event($1::jsonb)", [event]);
+      const stored = (await db.query<{ learning_metadata: Record<string, unknown>; interval_days: number }>("select learning_metadata, interval_days from public.schedule_states where learning_item_id=$1 and ability='meaning'", [item.id])).rows[0];
+      expect(stored.learning_metadata).toMatchObject({ reviewPolicy: 1, reviewStage: index, reviewCompleted: index === 5 });
+      expect(stored.interval_days).toBe([1, 3, 5, 7, 14, 14][index]);
+    }
+  } finally { await db.exec("rollback;"); }
+}, 30_000);
+
 it("English meaning replays actual frozen questions, rejects forged answers, and keeps language reservations separate", async () => {
   await db.exec("begin;");
   try {

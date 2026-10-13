@@ -220,6 +220,7 @@ export function computeUpcomingReviewOverview(
   let dueWithinOneDay = 0;
   let dueWithinWeek = 0;
   for (const state of relevant) {
+    if (state.reviewPolicy === 1 && state.reviewCompleted) continue;
     const dueAtMs = new Date(state.dueAt).getTime();
     if (dueAtMs <= oneDayAhead) dueWithinOneDay += 1;
     if (dueAtMs <= weekAhead) dueWithinWeek += 1;

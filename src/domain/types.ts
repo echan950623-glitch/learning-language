@@ -119,6 +119,12 @@ export interface ReviewAttempt {
  * `requiredAbilities()` 判斷該項目需要獨立讀音練習時才會建立）。
  */
 export interface ScheduleState {
+  /** Fixed 1/3/5/7/14-day policy; absence identifies preserved historical schedules. */
+  reviewPolicy?: 1;
+  /** 0: next-day confirmation; 1..4: 3/5/7/14 days; 5: sequence completed. */
+  reviewStage?: number;
+  /** Routine review stops only after the sequence and required evidence are complete. */
+  reviewCompleted?: boolean;
   ruleVersion?: 2;
   evidenceStreak?: number;
   lastEvidenceAt?: string;
@@ -215,6 +221,7 @@ export type LearningItemEdit = Pick<NewLearningItemInput, "promptZh" | "answer" 
 
 export type StudyMode = "today" | "wrong" | "full" | "random";
 export interface AttemptEvidence {
+  reviewPolicy?: 1;
   ruleVersion: 2;
   mode: StudyMode;
   attemptNumber: number;

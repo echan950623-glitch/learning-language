@@ -37,6 +37,17 @@ export function verificationState(item: LearningItem, ability: AbilityKind, sche
   const schedule = schedules.find(s => s.learningItemId === item.id && s.ability === ability);
   if (item.needsUnderstanding) return { stage: "learning", dueAt: schedule?.dueAt, independentDays: 0, contextVerified: false };
   const history = item.englishPractice ? englishEvidenceHistory(item, attempts) : relevantAttempts(item, ability, attempts);
+  if (schedule?.reviewPolicy === 1) {
+    const request = item.autoVerificationRequestedAt;
+    const pending = !!request && !history.some(a => a.reviewedAt >= request && a.abilityEvidence?.question.autoVerificationRequestedAt === request) && !item.reviewPaused;
+    const verified = !!schedule.reviewCompleted && (!item.englishPractice || englishModeVerified(item, attempts, "direct") && englishModeVerified(item, attempts, "context"));
+    return {
+      stage: pending ? "pending" : verified ? "verified" : "learning",
+      dueAt: pending ? new Date(Date.parse(request!) + DAY).toISOString() : verified ? undefined : schedule.dueAt,
+      independentDays: schedule.evidenceStreak ?? 0,
+      contextVerified: item.englishPractice ? englishModeVerified(item, attempts, "context") : history.some(a => a.abilityEvidence?.question.verificationQuestion?.kind === "context"),
+    };
+  }
   let successes: ReviewAttempt[] = [];
   for (const a of history) {
     if (a.result !== "correct" || a.usedHint) { successes = []; continue; }
@@ -65,7 +76,10 @@ export function verificationState(item: LearningItem, ability: AbilityKind, sche
 
 export function effectiveSchedules(items: LearningItem[], schedules: ScheduleState[], attempts: ReviewAttempt[]): ScheduleState[] {
   const byId = new Map(items.map(i => [i.id, i]));
-  return schedules.map(s => {
+  return schedules.filter(s => {
+    const item = byId.get(s.learningItemId);
+    return !item || s.reviewPolicy !== 1 || verificationState(item, s.ability, schedules, attempts).stage !== "verified";
+  }).map(s => {
     const item = byId.get(s.learningItemId);
     const dueAt = item ? verificationState(item, s.ability, schedules, attempts).dueAt : undefined;
     return dueAt ? { ...s, dueAt } : s;

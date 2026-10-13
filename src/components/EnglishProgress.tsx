@@ -5,6 +5,7 @@ import { englishEvidence, englishModeVerified, englishStatus } from "@/domain/en
 import { STATUS_LABELS } from "@/lib/labels";
 import { describePersistenceError, mutateRepository } from "@/repository";
 import type { LearningItem } from "@/domain/types";
+import { ReviewScheduleSummary } from "./ReviewScheduleSummary";
 
 export function EnglishProgress() {
   const { data, error } = usePracticeData("en");
@@ -31,6 +32,7 @@ export function EnglishProgress() {
       <summary className="min-h-11 cursor-pointer text-foreground"><span lang="en" className="font-semibold">{item.answer}</span><span className="ml-2 text-xs text-foreground-muted">{STATUS_LABELS[item.status]}{item.reviewPaused ? " · 已暫停" : ""}</span><p className="mt-1 text-sm">{item.promptZh}</p></summary>
       <p className="mt-2 text-xs text-foreground-muted">{item.partOfSpeech} · {item.tags.join("、")}</p>
       {item.englishPractice ? <>
+        <ReviewScheduleSummary item={item} schedules={data!.schedules} attempts={data!.attempts} />
         <p className="mt-3 text-sm text-foreground">直接辨義：{englishEvidence(item,data!.attempts,"direct").length} 個合格學習日{englishModeVerified(item,data!.attempts,"direct") ? " · 已驗證" : ""}</p>
         <p className="text-sm text-foreground">句中辨義：{englishEvidence(item,data!.attempts,"context").length} 個合格學習日{englishModeVerified(item,data!.attempts,"context") ? " · 已驗證" : ""}</p>
         <p className="mt-2 text-xs text-foreground-muted">{item.englishPractice.variants.length} 個題目版本；保留題不在此展開。</p>

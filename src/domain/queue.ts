@@ -50,7 +50,8 @@ export function buildTodayQueue(
   scheduleStates: ScheduleState[],
   now: Date,
   newItemLimit: number = DEFAULT_NEW_ITEM_SUGGESTION,
-  attempts: ReviewAttempt[] = []
+  attempts: ReviewAttempt[] = [],
+  includeAllNewUnits = false,
 ): TodayQueueResult {
   const scheduleByKey = new Map(effectiveSchedules(items, scheduleStates, attempts).map((s) => [scheduleKey(s.learningItemId, s.ability), s]));
   const nowIsoValue = now.toISOString();
@@ -64,9 +65,12 @@ export function buildTodayQueue(
   for (const item of items) {
     if (item.archivedAt) continue;
     const abilities = requiredAbilities(item);
-    const recallSchedule = scheduleByKey.get(scheduleKey(item.id, "recall"));
+    // A completed recall ability still qualifies the word for its unfinished reading ability.
+    const recallSchedule = scheduleByKey.get(scheduleKey(item.id, "recall")) ?? scheduleStates.find(s => s.learningItemId === item.id && s.ability === "recall");
 
     for (const ability of abilities) {
+      const original = scheduleStates.find(s => s.learningItemId === item.id && s.ability === ability);
+      if (original?.reviewPolicy === 1 && verificationState(item, ability, scheduleStates, attempts).stage === "verified") continue;
       const schedule = scheduleByKey.get(scheduleKey(item.id, ability));
 
       if (schedule) {
@@ -108,7 +112,9 @@ export function buildTodayQueue(
   freshItemUnits.sort((a, b) => Number(!!b.item.practice?.learned) - Number(!!a.item.practice?.learned) || a.item.createdAt.localeCompare(b.item.createdAt));
 
   const cap = Math.max(0, Math.min(newItemLimit, DAILY_NEW_ITEM_SAFETY_CAP));
-  const newUnits = [...pendingAbilityUnits, ...freshItemUnits].slice(0, cap);
+  const candidates = [...pendingAbilityUnits, ...freshItemUnits];
+  // The split daily planner applies its quota to distinct fresh words, not to unfinished abilities.
+  const newUnits = includeAllNewUnits ? candidates : candidates.slice(0, cap);
 
   return {
     reviewUnits,

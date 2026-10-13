@@ -258,6 +258,8 @@ export function isLearningItem(value: unknown): value is LearningItem {
 export function isScheduleState(value: unknown): value is ScheduleState {
   if (!isRecord(value)) return false;
   return (
+    (value.reviewPolicy === undefined && value.reviewStage === undefined && value.reviewCompleted === undefined || value.reviewPolicy === 1 && isNonNegativeInt(value.reviewStage) && value.reviewStage <= 5 &&
+      (value.reviewCompleted === undefined || isBoolean(value.reviewCompleted)) && (!value.reviewCompleted || value.reviewStage === 5)) &&
     (value.ruleVersion === undefined || value.ruleVersion === 2) &&
     (value.evidenceStreak === undefined || isNonNegativeInt(value.evidenceStreak)) &&
     (value.recentFailures === undefined || isNonNegativeInt(value.recentFailures)) &&
@@ -323,7 +325,7 @@ function isTimeZone(value: unknown): value is string {
 }
 function isAttemptEvidence(value: unknown, attempt: Record<string, unknown>): boolean {
   if (!isRecord(value)) return false;
-  return value.ruleVersion === 2 && ["today", "wrong", "full", "random"].includes(String(value.mode)) &&
+  return (value.reviewPolicy === undefined || value.reviewPolicy === 1) && value.ruleVersion === 2 && ["today", "wrong", "full", "random"].includes(String(value.mode)) &&
     isNonNegativeInt(value.attemptNumber) && value.attemptNumber <= 2 && isBoolean(value.wasDue) && isBoolean(value.introduced) &&
     typeof value.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.day) && isTimeZone(value.timeZone) &&
     typeof value.rawAnswer === "string" && typeof value.normalizedAnswer === "string" && ATTEMPT_RESULTS.includes(value.originalResult as AttemptResult) &&

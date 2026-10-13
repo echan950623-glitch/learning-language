@@ -44,7 +44,7 @@ export interface LearningItemRow {
 }
 
 export interface ScheduleStateRow {
-  learning_metadata?: Pick<ScheduleState, "ruleVersion" | "evidenceStreak" | "lastEvidenceAt" | "recentFailures" | "lastPenaltySessionId">;
+  learning_metadata?: Pick<ScheduleState, "ruleVersion" | "reviewPolicy" | "reviewStage" | "reviewCompleted" | "evidenceStreak" | "lastEvidenceAt" | "recentFailures" | "lastPenaltySessionId">;
   user_id: string;
   learning_item_id: string;
   ability: string;

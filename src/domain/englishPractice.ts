@@ -67,6 +67,7 @@ export function englishStatus(item: LearningItem, schedules: ScheduleState[], at
   if (!schedule) return "new" as const;
   if (item.needsUnderstanding) return "learning" as const;
   if ((schedule.recentFailures ?? 0) >= 3) return "struggling" as const;
+  if (schedule.reviewPolicy === 1 && !schedule.reviewCompleted) return "learning" as const;
   return englishModeVerified(item, attempts, "direct") && englishModeVerified(item, attempts, "context") ? "mastered" as const : "learning" as const;
 }
 export function freezeEnglishQuestion(item: LearningItem, attempts: ReviewAttempt[], sessions: StudySession[], verifying: boolean): LearningItem {

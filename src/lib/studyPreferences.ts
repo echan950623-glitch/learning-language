@@ -13,7 +13,7 @@ export type StudyQuestionCount = (typeof STUDY_QUESTION_COUNT_OPTIONS)[number];
 export const DEFAULT_STUDY_QUESTION_COUNT: StudyQuestionCount = 10;
 
 /** DB 端 check constraint 是 `> 0 and <= 50` 的範圍，這裡選幾個常用值當預設選項即可，不需要自由數字輸入。 */
-export const DAILY_NEW_ITEM_CAP_OPTIONS = [0, 5, 10, 15, 20, 30] as const;
+export const DAILY_NEW_ITEM_CAP_OPTIONS = [0, 5, 10, 15, 20, 30, 50] as const;
 export type DailyNewItemCap = (typeof DAILY_NEW_ITEM_CAP_OPTIONS)[number];
 export const DEFAULT_DAILY_NEW_ITEM_CAP: DailyNewItemCap = 5;
 

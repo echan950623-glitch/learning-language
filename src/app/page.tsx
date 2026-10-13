@@ -1,7 +1,7 @@
 "use client";
-import Link from "next/link";
 import { EnglishHome } from "@/components/EnglishHome";
-import { AbandonPracticeButton } from "@/components/AbandonPracticeButton";
+import Link from "next/link";
+import { DailyStudyAreas } from "@/components/DailyStudyAreas";
 import {
   PracticeStartButton,
   usePracticeData,
@@ -10,10 +10,6 @@ import {
   PRACTICE_CATEGORIES,
   learnedPracticeItems,
 } from "@/domain/practiceSelection";
-import { limitVerificationUnits } from "@/domain/automaticVerification";
-import { createDailyPlan, learningDay } from "@/domain/learningRules";
-import { getRepository } from "@/repository";
-import { readBusyMode, readDailyNewItemCap, readStudyQuestionCount } from "@/lib/studyPreferences";
 import { selectHomeLanguage, useHomeLanguage } from "@/lib/homeLanguage";
 export default function HomePage() {
   const language = useHomeLanguage();
@@ -39,26 +35,6 @@ export default function HomePage() {
 
 function JapaneseHome() {
   const { data, error } = usePracticeData();
-  const now = new Date();
-  const plan = data
-    ? createDailyPlan(
-        data.items,
-        data.schedules,
-        now,
-        readDailyNewItemCap(),
-        readBusyMode(),
-        getRepository()
-          .listDailyPlans()
-          .find((p) => p.language === "ja" && p.date === learningDay(now)),
-        undefined, data.attempts,
-      )
-    : undefined;
-  const remaining =
-    plan?.units.filter(
-      (u) =>
-        !plan.completedUnitKeys.includes(`${u.learningItemId}:${u.ability}`),
-    ).length ?? 0;
-  const roundCount = plan && data ? limitVerificationUnits(plan.units.filter(u => !plan.completedUnitKeys.includes(`${u.learningItemId}:${u.ability}`)), data.items, data.schedules, data.attempts, plan.busy ? Math.min(5, readStudyQuestionCount()) : readStudyQuestionCount()).length : 0;
   return (
     <div className="flex flex-col gap-5">
       <header>
@@ -72,47 +48,7 @@ function JapaneseHome() {
           {error}
         </p>
       ) : null}
-      <section className="rounded-2xl border border-border bg-surface p-4">
-        <h2 className="font-semibold text-foreground">
-          {data?.session ? "上次還沒練完" : "今日學習"}
-        </h2>
-        <p className="mt-2 text-sm text-foreground-muted">
-          {!data
-            ? "載入進度…"
-            : data.session
-              ? `已完成 ${data.session.exerciseResults.length} / ${data.session.plannedUnits.length} 題`
-              : `這輪安排 ${roundCount} 題，系統已替你挑好。`}
-        </p>
-        {data && (data.session || remaining > 0) ? (
-          <div
-            className={`mt-3 ${data.session ? "grid grid-cols-[minmax(0,1fr)_minmax(0,0.65fr)] items-start gap-2" : ""}`}
-          >
-            <Link
-              href="/study"
-              className="block min-h-12 rounded-xl bg-primary px-4 py-3 text-center font-semibold text-primary-foreground"
-            >
-              {data.session ? "繼續上次練習" : "開始今日學習"}
-            </Link>
-            {data.session ? (
-              <AbandonPracticeButton
-                key={data.session.id}
-                sessionId={data.session.id}
-              />
-            ) : null}
-          </div>
-        ) : (
-          <p className="mt-3 text-sm text-foreground-muted">
-            {data
-              ? data.items.some((item) => !item.coachReport && !item.archivedAt)
-                ? "目前沒有待安排的題目，仍可從下方選擇自主練習。"
-                : "還沒有學習內容。請先在 GPT 預覽並確認加入，再回來開始。"
-              : ""}
-          </p>
-        )}
-        <p className="mt-2 text-xs leading-5 text-foreground-muted">
-          熟悉的內容會減少出題，之後自動驗證；每輪最多兩題，不必自己挑。
-        </p>
-      </section>
+      <DailyStudyAreas language="ja" />
       <section aria-labelledby="choose-practice">
         <h2 id="choose-practice" className="mb-3 font-semibold text-foreground">
           今天想練什麼？

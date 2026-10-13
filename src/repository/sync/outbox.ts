@@ -60,7 +60,7 @@ export interface LearningItemRow {
 }
 
 export interface ScheduleStateRow {
-  learning_metadata?: Pick<ScheduleState, "ruleVersion" | "evidenceStreak" | "lastEvidenceAt" | "recentFailures" | "lastPenaltySessionId">;
+  learning_metadata?: Pick<ScheduleState, "ruleVersion" | "reviewPolicy" | "reviewStage" | "reviewCompleted" | "evidenceStreak" | "lastEvidenceAt" | "recentFailures" | "lastPenaltySessionId">;
   user_id: string;
   learning_item_id: string;
   ability: AbilityKind;
@@ -290,7 +290,7 @@ export function rowToLearningItem(row: LearningItemRow): LearningItem {
 
 export function scheduleStateToRow(schedule: ScheduleState, userId: string): ScheduleStateRow {
   return {
-    ...(schedule.ruleVersion ? { learning_metadata: { ruleVersion: schedule.ruleVersion, evidenceStreak: schedule.evidenceStreak, lastEvidenceAt: schedule.lastEvidenceAt, recentFailures: schedule.recentFailures, lastPenaltySessionId: schedule.lastPenaltySessionId } } : {}),
+    ...(schedule.ruleVersion ? { learning_metadata: { ruleVersion: schedule.ruleVersion, reviewPolicy: schedule.reviewPolicy, reviewStage: schedule.reviewStage, reviewCompleted: schedule.reviewCompleted, evidenceStreak: schedule.evidenceStreak, lastEvidenceAt: schedule.lastEvidenceAt, recentFailures: schedule.recentFailures, lastPenaltySessionId: schedule.lastPenaltySessionId } } : {}),
     user_id: userId,
     learning_item_id: schedule.learningItemId,
     ability: schedule.ability,

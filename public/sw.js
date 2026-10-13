@@ -12,7 +12,7 @@
 // - 只在 activate 時刪除自己命名規則（CACHE_PREFIX）下的舊版本快取，不動其他快取，
 //   也完全不碰 localStorage／IndexedDB（service worker 本來就無法直接存取這兩者）。
 const CACHE_PREFIX = "learning-language-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v31`;
+const CACHE_NAME = `${CACHE_PREFIX}v33`;
 // Build output confirms these are public static shells; learning/auth data stays in repositories.
 const PAGE_SHELLS = ["/", "/add", "/study", "/review", "/progress", "/settings", "/practice", "/practice/english"];
 const APP_SHELL = [...PAGE_SHELLS, "/manifest.webmanifest"];

@@ -1,7 +1,8 @@
 "use client";
 import { useRef, useState } from "react";
 import { describePersistenceError, mutateRepository } from "@/repository";
-export function AbandonPracticeButton({ sessionId }: { sessionId: string }) {
+import type { Language } from "@/domain/types";
+export function AbandonPracticeButton({ sessionId, language = "ja" }: { sessionId: string; language?: Language }) {
   const [confirming, setConfirming] = useState(false),
     [pending, setPending] = useState(false),
     [error, setError] = useState("");
@@ -13,7 +14,7 @@ export function AbandonPracticeButton({ sessionId }: { sessionId: string }) {
     setError("");
     try {
       await mutateRepository((r) => {
-        if (r.getInProgressSession("ja")?.id !== sessionId)
+        if (r.getInProgressSession(language)?.id !== sessionId)
           throw new Error("這輪進度已更新，請重新確認首頁。");
         r.abandonSession(sessionId);
       });
