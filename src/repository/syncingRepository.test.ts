@@ -5,6 +5,9 @@ import { LocalStorageLearningRepository } from "./localStorageRepository";
 import { writePersistedStore } from "./schema";
 import { SyncingLearningRepository } from "./syncingRepository";
 import { __clearOutboxForTests, listOutboxEntries } from "./sync/outbox";
+import { createDailyPlan } from "../domain/learningRules";
+import { getEnglishPracticeCatalog } from "../domain/englishPracticeCatalog";
+import { activeEnglishVariant } from "../domain/englishPractice";
 
 beforeEach(() => {
   installMockLocalStorage();
@@ -12,6 +15,23 @@ beforeEach(() => {
 });
 
 describe("SyncingLearningRepository CAS payload", () => {
+  it("English attempts carry the saved meaning schedule", () => {
+    const repository = new SyncingLearningRepository(new LocalStorageLearningRepository(), "user_1");
+    const now = new Date("2026-11-05T06:00:00Z");
+    const item = repository.addItem(getEnglishPracticeCatalog()[0]);
+    const plan = repository.saveDailyPlan(createDailyPlan([item], [], now, 5, false, undefined, undefined, [], "en"));
+    const session = repository.getOrCreateInProgressSession("en", plan.units, now, { mode: "today", dailyPlanId: plan.id, timeZone: plan.timeZone });
+    repository.acknowledgeIntroduction(session.id, item.id, now, true);
+    const variant = activeEnglishVariant(session.plannedUnits[0].itemSnapshot!)!;
+    const wrongAnswer = variant.choices.find(choice => choice.id !== variant.correctChoiceId)!.text;
+    repository.recordGradedAttempt({ sessionId: session.id, learningItemId: item.id, ability: "meaning", exerciseType: "meaning", exerciseId: "english_1", result: "incorrect", usedHint: false, responseTimeMs: 100, rawAnswer: wrongAnswer, now });
+    const events = listOutboxEntries().filter(entry => entry.type === "learning_event" && ["attempt", "correction"].includes(entry.payload.kind));
+    expect(events).toHaveLength(1);
+    for (const entry of events) {
+      if (entry.type !== "learning_event") throw new Error("unexpected operation");
+      expect(entry.payload.schedule).toMatchObject({ learning_item_id: item.id, ability: "meaning", language: "en" });
+    }
+  });
   it("作答與改判都帶上修改前排程，並使用本機 attempt ID", () => {
     writePersistedStore({
       schemaVersion: 2,

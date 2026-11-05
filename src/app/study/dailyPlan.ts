@@ -38,20 +38,21 @@ export async function prepareDailyPlan(now = new Date(), language: Language = "j
     const client: SupabaseClient = createBrowserClient();
     const drained = await drainOutboxFully(client, undefined, owner);
     if (!current()) throw new Error("帳戶已切換，今日計畫未寫入。");
-    if (drained.success) {
-      const aliases = loadAliasStore(owner);
-      const requested = translatePlan(plan, id => resolveCanonicalItemId(aliases, id));
-      const result = await client.rpc("reserve_daily_plan", { payload: requested });
-      if (!current()) throw new Error("帳戶已切換，舊計畫未寫入。");
-      if (!result.error && isDailyPlan(result.data)) {
-        const reserved = translatePlan(result.data, id => resolveLocalItemIdForCanonical(aliases, id) ?? id);
-        plan = { ...plan, reservationOwner: owner, newItemIds: reserved.newItemIds,
-          completedUnitKeys: [...new Set([...plan.completedUnitKeys, ...reserved.completedUnitKeys])] };
-      } else if (existing?.reservationOwner !== owner) {
-        plan = { ...plan, newItemIds: [], reason: "今天的新字額度尚未取得，先完成已保存的複習；連線後可再試。" };
-      } else plan = { ...plan, reservationOwner: owner, newItemIds: existing.newItemIds };
+    // A rejected learning event must keep its FIFO position, but does not invalidate
+    // an independent reservation. The RPC still enforces ownership, saved quota,
+    // existing enrollment and the shared daily reservation before granting words.
+    const aliases = loadAliasStore(owner);
+    const requested = translatePlan(plan, id => resolveCanonicalItemId(aliases, id));
+    const result = await client.rpc("reserve_daily_plan", { payload: requested });
+    if (!current()) throw new Error("帳戶已切換，舊計畫未寫入。");
+    if (!result.error && isDailyPlan(result.data)) {
+      const reserved = translatePlan(result.data, id => resolveLocalItemIdForCanonical(aliases, id) ?? id);
+      plan = { ...plan, reservationOwner: owner, newItemIds: reserved.newItemIds,
+        completedUnitKeys: [...new Set([...plan.completedUnitKeys, ...reserved.completedUnitKeys])] };
     } else if (existing?.reservationOwner !== owner) {
-      plan = { ...plan, newItemIds: [], reason: "待同步紀錄尚未送完，先做既有複習；新字額度稍後取得。" };
+      plan = { ...plan, newItemIds: [], reason: drained.success
+        ? "今天的新字額度尚未取得，先完成已保存的複習；連線後可再試。"
+        : "作答仍有待同步紀錄，今天的新字額度也尚未取得；可先做既有複習，並到設定查看同步診斷。" };
     } else plan = { ...plan, reservationOwner: owner, newItemIds: existing.newItemIds };
   } else if (owner) {
     if (existing?.reservationOwner === owner) plan = { ...plan, reservationOwner: owner, newItemIds: existing.newItemIds };

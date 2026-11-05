@@ -9,12 +9,53 @@ import { prepareDailyPlan } from "./dailyPlan";
 import { readDailyNewItemCap } from "../../lib/studyPreferences";
 import { setAccountOwner } from "../../repository/accountStorage";
 import { createDailyAreaPlan, dailyAreaUnits } from "../../domain/dailyStudyAreas";
+import * as browserClient from "../../lib/supabase/client";
+import * as syncEngine from "../../repository/sync/syncEngine";
+import { enqueueOutboxEntry, listOutboxEntries } from "../../repository/sync/outbox";
 
 beforeEach(() => {
   installMockLocalStorage();
   __resetRepositorySingletonForTests();
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it("a blocked FIFO does not prevent a separately approved cloud reservation or remove pending events", async () => {
+  const now = new Date("2026-11-05T06:00:00Z");
+  setAccountOwner("test-account");
+  vi.stubGlobal("navigator", { onLine: true, userAgent: "Node.js" });
+  await mutateRepository(repository => {
+    for (let i = 0; i < 6; i++) repository.addItem({ language: "ja", type: "vocabulary", promptZh: `詞義${i}`, answer: `単語${i}`, source: "ai", tags: [] });
+    const plan = createDailyAreaPlan(repository.listItems({ language: "ja" }), [], now);
+    for (let i = 0; i < 41; i++) enqueueOutboxEntry({ type: "learning_event", payload: { id: `blocked-${i}`, kind: "plan", plan } });
+  });
+  const pending = structuredClone(listOutboxEntries());
+  vi.spyOn(syncEngine, "drainOutboxFully").mockResolvedValue({ success: false, kind: "error", message: "sync_conflict:learning_question_changed" });
+  const rpc = vi.fn(async (_name, { payload }) => ({ data: { ...payload, newItemIds: payload.newItemIds.slice(0, 2) }, error: null }));
+  vi.spyOn(browserClient, "createBrowserClient").mockReturnValue({ rpc } as unknown as ReturnType<typeof browserClient.createBrowserClient>);
+  const plan = await prepareDailyPlan(now, "ja", "new");
+  expect(rpc).toHaveBeenCalledWith("reserve_daily_plan", expect.any(Object));
+  expect(plan.reservationOwner).toBe("test-account");
+  expect(plan.newItemIds).toHaveLength(2);
+  expect(dailyAreaUnits(plan, "new")).toHaveLength(2);
+  // Saving the approved reservation may append a plan event; the blocked prefix
+  // must remain byte-for-byte intact and in its original order.
+  expect(listOutboxEntries().slice(0, pending.length)).toEqual(pending);
+});
+
+it("a failed reservation behind a blocked event never grants local-only new words", async () => {
+  const now = new Date("2026-11-05T06:00:00Z");
+  setAccountOwner("test-account");
+  vi.stubGlobal("navigator", { onLine: true, userAgent: "Node.js" });
+  await mutateRepository(repository => repository.addItem({ language: "ja", type: "vocabulary", promptZh: "測試", answer: "試験", source: "ai", tags: [] }));
+  vi.spyOn(syncEngine, "drainOutboxFully").mockResolvedValue({ success: false, kind: "error", message: "sync_conflict:learning_question_changed" });
+  const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: "plan_item_language_mismatch" } });
+  vi.spyOn(browserClient, "createBrowserClient").mockReturnValue({ rpc } as unknown as ReturnType<typeof browserClient.createBrowserClient>);
+  const plan = await prepareDailyPlan(now, "ja", "new");
+  expect(rpc).toHaveBeenCalledOnce();
+  expect(plan.newItemIds).toEqual([]);
+  expect(dailyAreaUnits(plan, "new")).toEqual([]);
+  expect(plan.reason).toContain("設定查看同步診斷");
+});
 it("offline rebuild only uses the previously reserved cloud words, not newly proposed quota", async () => {
   const now = new Date("2026-10-13T06:00:00Z");
   setAccountOwner("test-account");

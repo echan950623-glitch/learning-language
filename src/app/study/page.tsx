@@ -43,6 +43,7 @@ import {
   resolveAttemptResync,
 } from "./sessionInit";
 import { prepareDailyPlan } from "./dailyPlan";
+import { StudyActionGuard } from "./actionGuard";
 import { ActiveStudyClock } from "@/domain/activeStudyClock";
 import {
   activePracticeVariant,
@@ -146,7 +147,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isSubmittingRef = useRef(false);
   const advancingRef = useRef(false);
-  const lastVocabularySkipAt = useRef(-Infinity);
+  const actionGuard = useRef(new StudyActionGuard());
 
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [isCorrecting, setIsCorrecting] = useState(false);
@@ -308,6 +309,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
   async function handleSubmitAnswer(
     event?: FormEvent<HTMLFormElement>,
     forgotten = false,
+    eventTime = event?.timeStamp ?? performance.now(),
   ) {
     event?.preventDefault();
     if (isSubmittingRef.current) return; // 防止表單被重複送出
@@ -335,6 +337,9 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           : undefined,
     });
 
+    const actionKey = `answer:${sessionId}:${currentIndex}:${currentExercise.id}`;
+    if (!actionGuard.current.begin(actionKey, eventTime, performance.now())) return;
+    let saved = false;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
     setGradeError(null);
@@ -382,6 +387,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
       }
       isSubmittingRef.current = false;
       setIsSubmitting(false);
+      actionGuard.current.finish(actionKey, false, performance.now());
       return;
     }
 
@@ -414,6 +420,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
         });
       });
 
+      saved = true;
       setExerciseResults(outcome.session.exerciseResults);
       setSessionSnapshot(outcome.session);
       setGradedResult(graded);
@@ -427,6 +434,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     } finally {
       isSubmittingRef.current = false;
       setIsSubmitting(false);
+      actionGuard.current.finish(actionKey, saved, performance.now());
     }
   }
 
@@ -456,57 +464,69 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     }
   }
 
-  function handleNext() {
+  function handleNext(event: { timeStamp: number }) {
     if (advancingRef.current) return; // 防止 Enter／點擊重複觸發造成跳題
+    const actionKey = `next:${sessionId}:${currentIndex}`;
+    if (!actionGuard.current.begin(actionKey, event.timeStamp, performance.now())) return;
     advancingRef.current = true;
-
-    const freshSession = getRepository()
-      .listStudySessions({ status: "all" })
-      .find((session) => session.id === sessionId);
-    if (freshSession?.status === "completed") {
-      setPlannedUnits(freshSession.plannedUnits);
-      const repository = getRepository();
-      const freshSchedules = repository.listScheduleStates({ language });
-      setUpcomingOverview(
-        computeUpcomingReviewOverview(freshSchedules, language, new Date()),
-      );
-      setPhase("summary");
-    } else {
-      // 換下一題時以「本機真正存下來的進度」為準，不是畫面上那個可能已經過期的計數器。
-      // 背景同步會在作答之間重寫 store 並換掉 repository 實例；沿用舊計數器就會送出到
-      // 錯的位置，然後被送出前的核對擋下來。這裡先對齊，讓守門不必當作唯一防線。
-      const repository = getRepository();
-      const resync = resolveAttemptResync(repository, sessionId, language);
-      if (resync.kind === "realign") {
-        setItemsById(
-          new Map(
-            repository
-              .listItems({ language, includeArchived: true })
-              .map((entry) => [entry.id, entry]),
-          ),
+    let advanced = false;
+    try {
+      const freshSession = getRepository()
+        .listStudySessions({ status: "all" })
+        .find((session) => session.id === sessionId);
+      if (freshSession?.status === "completed") {
+        setPlannedUnits(freshSession.plannedUnits);
+        const repository = getRepository();
+        const freshSchedules = repository.listScheduleStates({ language });
+        setUpcomingOverview(
+          computeUpcomingReviewOverview(freshSchedules, language, new Date()),
         );
-        setPlannedUnits(resync.session.plannedUnits);
-        setSessionSnapshot(resync.session);
-        setExerciseResults(resync.session.exerciseResults);
-        setCurrentIndex(resync.index);
+        setPhase("summary");
       } else {
-        setCurrentIndex((i) => i + 1);
+        // 換下一題時以「本機真正存下來的進度」為準，不是畫面上那個可能已經過期的計數器。
+        // 背景同步會在作答之間重寫 store 並換掉 repository 實例；沿用舊計數器就會送出到
+        // 錯的位置，然後被送出前的核對擋下來。這裡先對齊，讓守門不必當作唯一防線。
+        const repository = getRepository();
+        const resync = resolveAttemptResync(repository, sessionId, language);
+        if (resync.kind === "realign") {
+          setItemsById(
+            new Map(
+              repository
+                .listItems({ language, includeArchived: true })
+                .map((entry) => [entry.id, entry]),
+            ),
+          );
+          setPlannedUnits(resync.session.plannedUnits);
+          setSessionSnapshot(resync.session);
+          setExerciseResults(resync.session.exerciseResults);
+          setCurrentIndex(resync.index);
+        } else {
+          setCurrentIndex((i) => i + 1);
+        }
       }
+      advanced = true;
+    } catch (error) {
+      advancingRef.current = false;
+      setGradeError(describePersistenceError(error));
+    } finally {
+      actionGuard.current.finish(actionKey, advanced, performance.now());
     }
   }
 
-  async function skipKnownVocabulary() {
-    const clickedAt = performance.now();
-    if (isSubmittingRef.current || clickedAt - lastVocabularySkipAt.current < 500) return;
+  async function skipKnownVocabulary(eventTime: number) {
+    if (isSubmittingRef.current) return;
     const unit = plannedUnits[currentIndex];
     if (!unit) return;
-    lastVocabularySkipAt.current = clickedAt;
+    const actionKey = `verify:${sessionId}:${currentIndex}:${unit.learningItemId}`;
+    if (!actionGuard.current.begin(actionKey, eventTime, performance.now())) return;
+    let saved = false;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
     try {
       const session = await mutateRepository((repository) =>
         requestVocabularyVerification(repository, sessionId, currentIndex, unit.learningItemId, new Date()),
       );
+      saved = true;
       setSessionSnapshot(session);
       setPlannedUnits(session.plannedUnits);
       setExerciseResults(session.exerciseResults);
@@ -517,11 +537,15 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     } finally {
       isSubmittingRef.current = false;
       setIsSubmitting(false);
+      actionGuard.current.finish(actionKey, saved, performance.now());
     }
   }
 
-  async function understandItem(itemId: string, alreadyKnown = false) {
+  async function understandItem(itemId: string, eventTime: number, alreadyKnown = false) {
     if (isSubmittingRef.current) return;
+    const actionKey = `understand:${sessionId}:${itemId}`;
+    if (!actionGuard.current.begin(actionKey, eventTime, performance.now())) return;
+    let saved = false;
     isSubmittingRef.current = true;
     setIntroductionSaving(true);
     try {
@@ -533,6 +557,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           alreadyKnown,
         ),
       );
+      saved = true;
       setSessionSnapshot(session);
       setPlannedUnits(session.plannedUnits);
       setClockNow(Date.now());
@@ -542,6 +567,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     } finally {
       isSubmittingRef.current = false;
       setIntroductionSaving(false);
+      actionGuard.current.finish(actionKey, saved, performance.now());
     }
   }
 
@@ -885,7 +911,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           <button
             type="button"
             disabled={introductionSaving}
-            onClick={() => understandItem(introductionItem.id)}
+            onClick={event => understandItem(introductionItem.id, event.timeStamp)}
             className="min-h-12 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground"
           >
             已理解，繼續
@@ -893,7 +919,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           <button
             type="button"
             disabled={introductionSaving}
-            onClick={() => understandItem(introductionItem.id, true)}
+            onClick={event => understandItem(introductionItem.id, event.timeStamp, true)}
             className="min-h-12 rounded-xl border border-border px-4 py-3 text-foreground"
           >
             這個已經會了（接著驗證回想）
@@ -1119,7 +1145,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
             <button
               type="button"
               disabled={isSubmitting}
-              onClick={() => handleSubmitAnswer(undefined, true)}
+              onClick={event => handleSubmitAnswer(undefined, true, event.timeStamp)}
               className="min-h-12 rounded-xl border border-border px-4 py-3 text-sm font-medium text-foreground"
             >
               想不起來

@@ -22,7 +22,14 @@ npm run build
 
 憑證未提交。需要雲端同步、OAuth 或 MCP 整合時，請在 workspace 的 secret store 或 Git 忽略的 `.env.local` 設定環境變數；參考 `src/lib/supabase` 與 MCP/OAuth 的設定檢查。不要把真實帳戶備份、token 或 `.env` 提交。部分外部整合測試需要另外設定測試憑證；預設跳過不代表正式環境驗收。
 
-## 接續工作（2026-10-12）
+## 接續工作（2026-11-05）
+
+- 已整合題目位置衝突恢復、新字額度獨立預約、英文 meaning 排程、防延遲點擊，以及一般上傳等待網路時不阻擋本機作答；PWA shell v35。
+- 本機 lint、typecheck、build 通過，658 passed／22 skipped。完整備份在隔離 PostgreSQL 演練：41 筆待送操作全部完成，885 筆原作答逐欄保留，後續新字預約核准 50 筆；沒有修改正式學習資料。手機尺寸訪客入口、作答防連點及重整續接亦通過。
+- 11/3 正式站有未入 Git 的操作改善。本整合版已取回原版防點擊守門，並重新實作、驗證一般同步不阻擋本機作答的行為，詳見 [同步調查與整合交付](docs/sync-question-conflict.md)。尚未正式發布，手機資料恢復需待新版實際載入後驗收。
+- 22 個外部測試未執行；真實登入、跨裝置與實體手機 PWA 尚待新版驗收。不需新增 migration。定時內容檢查與學習評估仍未實作。
+
+### 先前發布基準（2026-10-12）
 
 - 正式站：https://learning-language-three.vercel.app/
 - 英文功能已發布，Production deployment：`dpl_8s8ox6twAwr14xY6SrS9AMc6iRQ4`；PWA shell v30。

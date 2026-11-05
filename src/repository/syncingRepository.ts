@@ -198,7 +198,8 @@ export class SyncingLearningRepository implements LearningRepository {
   }
 
   private eventPayload(kind: "attempt" | "correction", before: StudySession, previous: ScheduleState | undefined, result: RecordGradedAttemptResult): LearningEventPayload {
-    const schedule = this.inner.getScheduleState(result.attempt.learningItemId, result.attempt.exerciseType === "reading" ? "reading" : "recall");
+    const ability = result.attempt.exerciseType === "meaning" ? "meaning" : result.attempt.exerciseType === "reading" ? "reading" : "recall";
+    const schedule = this.inner.getScheduleState(result.attempt.learningItemId, ability);
     return { id: generateId("event"), kind, beforeSession: studySessionToRow(before, this.userId), session: studySessionToRow(result.session, this.userId),
       item: learningItemToRow(this.inner.getItem(result.attempt.learningItemId)!, this.userId),
       attempt: reviewAttemptToRow(result.attempt, result.session.exerciseResults.findIndex(answer => answer.exerciseId === result.attempt.exerciseId), this.userId),

@@ -5,17 +5,17 @@ import { describePersistenceError, mutateRepository } from "@/repository";
 import { setVocabularyPaused } from "@/repository/vocabularyPause";
 
 /** Separate cancel/confirm state; rapid double taps cannot confirm the verification request. */
-export function ConfirmVocabularyVerification({ onConfirm, disabled }: { onConfirm: () => Promise<void>; disabled: boolean }) {
+export function ConfirmVocabularyVerification({ onConfirm, disabled }: { onConfirm: (eventTime: number) => Promise<void>; disabled: boolean }) {
   const [armed, setArmed] = useState(false);
   const armedAt = useRef(0);
   const pending = useRef(false);
   const style = "min-h-11 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-surface-muted";
   return <div className="flex flex-wrap items-center gap-2">
-    <button type="button" disabled={disabled} className={style} onClick={async () => {
+    <button type="button" disabled={disabled} className={style} onClick={async event => {
       if (!armed) { armedAt.current = performance.now(); setArmed(true); return; }
       if (pending.current || performance.now() - armedAt.current < 500) return;
       pending.current = true;
-      try { await onConfirm(); } finally { pending.current = false; setArmed(false); }
+      try { await onConfirm(event.timeStamp); } finally { pending.current = false; setArmed(false); }
     }}>{armed ? "再按一次，交給系統驗證" : "這個已會，改為定期驗證"}</button>
     {armed ? <>
       <button type="button" disabled={disabled} className={style} onClick={() => setArmed(false)}>取消</button>

@@ -11,6 +11,14 @@ import { activeEnglishVariant } from "../../domain/englishPractice";
 import { normalizeForComparison } from "../../domain/text";
 import { setVocabularyPaused, requestVocabularyVerification } from "../vocabularyPause";
 import { learningItemToRow, reviewAttemptToRow, scheduleStateToRow, studySessionToRow, type LearningEventPayload } from "./outbox";
+import { installMockLocalStorage } from "../../test/localStorageMock";
+import { questionConflictFixture } from "../../test/questionConflictFixture";
+import { localPostgresSyncClient } from "../../test/localPostgresSyncClient";
+import { setAccountOwner, withDataLock, accountStorage } from "../accountStorage";
+import { writePersistedStore, readPersistedStore } from "../schema";
+import { setOutboxEntries, listOutboxEntries } from "./outbox";
+import { drainOutboxFully, __resetSyncEngineForTests } from "./syncEngine";
+import { exportLocalBackup, previewLocalBackup } from "../backup";
 
 // No .env, HTTP, Supabase client, real users, or external database connections.
 const db = new PGlite();
@@ -44,6 +52,35 @@ beforeAll(async () => {
   `);
 }, 30_000);
 afterAll(async () => { await db.close(); });
+
+it("recovers a reanswered cloud position through the real SQL guards without dropping either answer or retry", async () => {
+  await db.exec("begin;");
+  try {
+    installMockLocalStorage(); __resetSyncEngineForTests(); setAccountOwner(A);
+    const f = questionConflictFixture();
+    await db.exec(`set role authenticated; select set_config('request.jwt.claim.sub','${A}',false);`);
+    for (const item of f.remoteStore.items) await db.query("select public.upsert_learning_item_guarded($1::jsonb)", [learningItemToRow(item, A)]);
+    await db.query("select public.upsert_study_session_guarded($1::jsonb)", [f.remote]);
+    for (const answer of f.remoteAnswers) await db.query("select public.upsert_review_attempt_guarded($1::jsonb)", [answer]);
+    for (const schedule of f.remoteStore.scheduleStates) await db.query("select public.upsert_schedule_state_guarded($1::jsonb)", [scheduleStateToRow(schedule, A)]);
+    await db.exec("savepoint original_conflict;");
+    await expect(db.query("select public.commit_learning_event($1::jsonb)", [f.entries[0].payload])).rejects.toThrow("learning_question_changed");
+    await db.exec("rollback to savepoint original_conflict;");
+    await withDataLock(() => { writePersistedStore(f.store); setOutboxEntries(f.entries); });
+    const drained = await drainOutboxFully(localPostgresSyncClient(db), undefined, A);
+    expect(drained).toEqual({ success: true });
+    expect(listOutboxEntries()).toEqual([]);
+    const restored = readPersistedStore();
+    expect(restored.reviewAttempts).toHaveLength(f.store.reviewAttempts.length);
+    const sessionIds = restored.studySessions.map(s => s.id);
+    const uploaded = (await db.query<{ id: string }>("select id from public.review_attempts where session_id=any($1::text[])", [sessionIds])).rows;
+    expect(uploaded.map(a => a.id).sort()).toEqual(f.store.reviewAttempts.map(a => a.id).sort());
+    const sessions = (await db.query<{ status: string }>("select status from public.study_sessions where id=any($1::text[]) order by status", [sessionIds])).rows;
+    expect(sessions).toEqual([{ status: "abandoned" }, { status: "completed" }]);
+    expect(JSON.parse(accountStorage().getItem(`learning-language:sync-learning-rebase:${A}`)!)[0].recovery).toBeDefined();
+    expect(() => previewLocalBackup(exportLocalBackup())).not.toThrow();
+  } finally { await db.exec("rollback; reset role;"); }
+}, 30_000);
 
 it("the deployed SQL contracts accept fixed review stages and completion without schema changes", async () => {
   await db.exec("begin;");

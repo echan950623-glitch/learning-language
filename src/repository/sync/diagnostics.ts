@@ -34,6 +34,14 @@ export interface SyncHeadDiagnostics {
   /** 這個項目／能力目前在本機 store 的排程；null 表示本機沒有。 */
   localSchedule: ScheduleSummary | null;
   localItemStatus: string | null;
+  learningEvent?: {
+    kind: string;
+    sequence: number | null;
+    beforeStatus: string | null;
+    beforePlannedUnits: number;
+    localSessionAttempts: number;
+    unit: { learningItemId: string; ability: AbilityKind } | null;
+  };
 }
 
 /** 本機 store 的結構摘要；只有計數、ID 與布林，不含任何單字內容。 */
@@ -119,8 +127,12 @@ function describeHead(entry: OutboxEntry, store: PersistedStore, aliases: AliasS
     }
     case "learning_event":
       sessionId = entry.payload.session?.id ?? null;
-      localItemId = entry.payload.item?.id ?? null;
-      ability = entry.payload.attempt?.exercise_type === "reading" ? "reading" : "recall";
+      exerciseId = entry.payload.attempt?.exercise_id ?? null;
+      localItemId = entry.payload.attempt?.learning_item_id ?? entry.payload.item?.id ?? null;
+      ability = entry.payload.attempt?.exercise_type === "meaning" ? "meaning"
+        : entry.payload.attempt?.exercise_type === "reading" ? "reading"
+        : entry.payload.attempt ? "recall" : null;
+      expected = entry.payload.beforeSchedule ?? null;
       break;
     case "upsert_item":
       localItemId = entry.payload.id;
@@ -146,6 +158,20 @@ function describeHead(entry: OutboxEntry, store: PersistedStore, aliases: AliasS
       : undefined;
 
   return {
+    ...(entry.type === "learning_event" ? {
+      learningEvent: {
+        kind: entry.payload.kind,
+        sequence: entry.payload.attempt?.sequence_in_session ?? null,
+        beforeStatus: entry.payload.beforeSession?.status ?? null,
+        beforePlannedUnits: entry.payload.beforeSession?.planned_units.length ?? 0,
+        localSessionAttempts: store.reviewAttempts.filter(attempt => attempt.sessionId === sessionId).length,
+        unit: (() => {
+          const sequence = entry.payload.attempt?.sequence_in_session;
+          const unit = sequence === undefined ? undefined : entry.payload.beforeSession?.planned_units[sequence];
+          return unit ? { learningItemId: unit.learningItemId, ability: unit.ability } : null;
+        })(),
+      },
+    } : {}),
     type: entry.type,
     createdAt: entry.createdAt,
     attempts: entry.attempts,

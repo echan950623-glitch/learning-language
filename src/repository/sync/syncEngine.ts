@@ -2,6 +2,7 @@ import { accountStorage, getAccountOwner, getAccountGeneration, withDataLock, is
 import { applySyncedPreferences, type StudyQuestionCount, type DailyNewItemCap } from "../../lib/studyPreferences";
 import { fetchAllRows } from "../../lib/supabase/pagination";
 import { fetchStableSnapshot } from "../../lib/supabase/snapshot";
+import { canonicalJson } from "../../domain/learningPractice";
 /**
  * 背景同步引擎：把 outbox 依序送到 Supabase（drain），並在登入／啟動時把遠端資料
  * 併回本機（pull-merge）。見 ARCHITECTURE.md「資料流總覽」。
@@ -71,6 +72,7 @@ import { buildSyncDiagnostics, type SyncDiagnostics } from "./diagnostics";
 import { restoreMissingCloudSession } from "./missingSessionRecovery";
 import { checkAlreadyApplied, rebaseScheduleConflict } from "./scheduleRebase";
 import { rebaseLearningEvent } from "./learningEventRebase";
+import { recoverLearningQuestion, LearningQuestionRecoveryRefused } from "./learningQuestionRecovery";
 
 // supabase-js 的型別（Database 預設是 any），只用來標註「這是一個真正的 Supabase client」，
 // 不依賴任何尚未產生的 generated types。測試時傳入結構相容的假 client 並用
@@ -145,6 +147,7 @@ class SyncCallError extends Error {
 }
 
 function classifyError(error: unknown): { kind: "offline" | "auth" | "error"; message: string } {
+  if (error instanceof LearningQuestionRecoveryRefused) return { kind: "error", message: error.message };
   if (error instanceof SyncCallError) {
     if (error.status === 401) {
       return { kind: "auth", message: "登入狀態已失效，請重新登入後再試一次。" };
@@ -197,6 +200,11 @@ async function runSupabaseCall(supabase: SupabaseClient, entry: OutboxEntry): Pr
     }
   }
   const operation = aliases ? translateOutgoingOperation(entry, aliases) : entry;
+  return sendSupabaseOperation(supabase, operation);
+}
+
+/** Pure network boundary: callers must persist and translate the request before releasing the data lock. */
+async function sendSupabaseOperation(supabase: SupabaseClient, operation: OutboxEntry | ReturnType<typeof translateOutgoingOperation>): Promise<SupabaseCallResult> {
   switch (operation.type) {
     case "learning_event":
       return supabase.rpc("commit_learning_event", { payload: operation.payload });
@@ -469,12 +477,18 @@ async function restoreMissingSession(
 /** 同一輪 drain 內已經補送過 session 的 `userId:sessionId`，見 `restoreMissingSession`。 */
 const sessionsRestoredThisDrain = new Set<string>();
 
-async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
+type SentEntry = { entry: OutboxEntry } & ({ response: SupabaseCallResult } | { error: unknown });
+
+async function drainStep(supabase: SupabaseClient, sent?: SentEntry): Promise<StepOutcome> {
   const entries = listOutboxEntries();
   if (entries.length === 0) return { outcome: "empty" };
 
   const entry = entries[0];
+  // Another tab can finish this idempotent request, or a newer preference can
+  // replace its payload while HTTP is pending. Never acknowledge the newer head.
+  if (sent && canonicalJson(entry) !== canonicalJson(sent.entry)) return { outcome: "advanced" };
   try {
+    if (sent && "error" in sent) throw sent.error;
     const replayUserId = activeConfig?.userId ?? transientDrainUserId;
     if (replayUserId && isGradedOperation(entry)) {
       // 上一次重放的 RPC 已成功、但本機來不及移除 entry：直接視為完成，不重複作答。
@@ -492,8 +506,14 @@ async function drainStep(supabase: SupabaseClient): Promise<StepOutcome> {
       }
     }
 
-    const response = await runSupabaseCall(supabase, entry);
+    const response = sent && "response" in sent ? sent.response : await runSupabaseCall(supabase, entry);
     if (response.error) {
+      if (replayUserId && entry.type === "learning_event" && entry.payload.kind === "attempt" &&
+        isServerRejection(response.status) && response.error.message.includes("sync_conflict:learning_question_changed")) {
+        await recoverLearningQuestion(supabase, replayUserId, entry);
+        usersPendingAliasRefresh.add(replayUserId);
+        return { outcome: "advanced" };
+      }
       if (replayUserId && entry.type === "learning_event" && ["attempt","correction"].includes(entry.payload.kind) &&
         (response.error.message.includes("sync_conflict:schedule_changed") || response.error.message.includes("sync_conflict:item_version_changed"))) {
         await rebaseLearningEvent(supabase,replayUserId,entry);
@@ -571,7 +591,29 @@ export async function drainOutboxFully(
       sessionsRestoredThisDrain.clear();
       for (;;) {
         if (owner !== getAccountOwner() || generation !== getAccountGeneration()) return { success: false, kind: "auth", message: "帳戶已切換，同步已停止。" };
-        const step = await withDataLock(() => drainStep(supabase));
+        const request = await withDataLock(() => {
+          const entry = listOutboxEntries()[0];
+          if (!entry) return null;
+          const aliasUserId = activeConfig?.userId ?? transientDrainUserId;
+          const aliases = aliasUserId ? loadAliasStore(aliasUserId) : null;
+          // Legacy recovery and aliased content updates have additional guarded
+          // reads/writes. Keep their existing exclusive path; normal learning
+          // events and uploads can wait for HTTP without blocking local answers.
+          if (isGradedOperation(entry) || (entry.type === "upsert_item" && aliases?.items.some(alias => alias.localId === entry.payload.id))) return { exclusive: true as const };
+          return { exclusive: false as const, entry: structuredClone(entry),
+            operation: aliases ? translateOutgoingOperation(entry, aliases) : structuredClone(entry) };
+        });
+        if (!request) return { success: true };
+        if (owner !== getAccountOwner() || generation !== getAccountGeneration()) return { success: false, kind: "auth", message: "帳戶已切換，同步已停止。" };
+        let step: StepOutcome;
+        if (request.exclusive) step = await withDataLock(() => drainStep(supabase));
+        else {
+          let sent: SentEntry;
+          try { sent = { entry: request.entry, response: await sendSupabaseOperation(supabase, request.operation) }; }
+          catch (error) { sent = { entry: request.entry, error }; }
+          if (owner !== getAccountOwner() || generation !== getAccountGeneration()) return { success: false, kind: "auth", message: "帳戶已切換，原帳戶待送紀錄已保留。" };
+          step = await withDataLock(() => drainStep(supabase, sent));
+        }
         if (step.outcome === "empty") return { success: true };
         if (step.outcome === "failed") return { success: false, kind: step.kind, message: step.message };
         onStep?.(outboxPendingCount());
@@ -935,6 +977,7 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
   if (getAccountOwner() !== null && getAccountOwner() !== userId) throw new Error("下載帳戶與本機資料歸屬不符，已停止同步。");
   const epoch = getAccountGeneration();
   const startingRevision = readStoreRevision();
+  const startingOutbox = JSON.stringify(listOutboxEntries());
   const preferenceKeys = ["learning-language:study-preferences:v1", "learning-language:study-preferences:new-item-cap:v1"];
   const initialPreferences = preferenceKeys.map(key => accountStorage().getItem(key));
   const valid = () => isCurrent() && epoch === getAccountGeneration();
@@ -953,6 +996,9 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
     await withDataLock(() => {
     if (!valid()) return;
     if (startingRevision !== readStoreRevision()) throw new Error("下載期間本機已有新作答或資料變更，已保留本機資料；請重試下載。");
+    // A drain may upload an answer and remove its entry without changing storeRevision.
+    // A snapshot fetched before that upload must not roll back the session cursor.
+    if (startingOutbox !== JSON.stringify(listOutboxEntries())) throw new Error("下載期間待送紀錄已更新，已保留本機作答進度；請重試下載。");
     const current = readPersistedStore();
     const pendingEntries = listOutboxEntries();
     const aliases = loadAliasStore(userId);

@@ -21,6 +21,21 @@ function entry(operation: Omit<OutboxEntry, "id" | "createdAt" | "attempts">): O
 }
 
 describe("buildSyncDiagnostics", () => {
+  it.each(["reading", "meaning"] as const)("learning event exposes the actual %s question and expected schedule without content", ability => {
+    const store = createEmptyStore();
+    const schedule = { due_at: "2026-11-04T00:00:00Z", interval_days: 1, streak: 1, lapse_count: 0, last_reviewed_at: "2026-11-03T00:00:00Z" };
+    const result = buildSyncDiagnostics([entry({ type: "learning_event", payload: {
+      id: "event_1", kind: "attempt",
+      beforeSchedule: { ...schedule, user_id: "user_1", learning_item_id: "item_1", language: "ja", ability },
+      beforeSession: { id: "session_1", user_id: "user_1", language: "ja", status: "in_progress", started_at: "2026-11-03T00:00:00Z", completed_at: null, new_item_ids: [], review_item_ids: ["item_1"], planned_units: [{ learningItemId: "item_1", ability, kind: "review" }] },
+      attempt: { id: "attempt_1", user_id: "user_1", session_id: "session_1", sequence_in_session: 0, exercise_id: "exercise_1", learning_item_id: "item_1", language: "ja", exercise_type: ability, result: "correct", used_hint: false, response_time_ms: 10, reviewed_at: "2026-11-03T00:00:00Z" },
+    } })], store, null);
+    expect(result.head).toMatchObject({ exerciseId: "exercise_1", localItemId: "item_1", ability,
+      expectedSchedule: { dueAt: schedule.due_at, intervalDays: 1, streak: 1 },
+      learningEvent: { kind: "attempt", sequence: 0, beforeStatus: "in_progress", beforePlannedUnits: 1, localSessionAttempts: 0, unit: { learningItemId: "item_1", ability } },
+    });
+  });
+
   it("空佇列沒有 head", () => {
     expect(buildSyncDiagnostics([], createEmptyStore(), null)).toEqual({
       pendingCount: 0,
