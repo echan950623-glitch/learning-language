@@ -1,7 +1,7 @@
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { installMockLocalStorage } from "../test/localStorageMock";
-import { accountKey, readAccountSnapshot, resetAccountStorageForTests, setAccountOwner, withDataLock } from "./accountStorage";
+import { accountKey, accountStorage, readAccountSnapshot, resetAccountStorageForTests, setAccountOwner, withDataLock } from "./accountStorage";
 import { LocalStorageLearningRepository } from "./localStorageRepository";
 import { SyncingLearningRepository } from "./syncingRepository";
 import { listOutboxEntries } from "./sync/outbox";
@@ -10,6 +10,30 @@ const input = (name: string) => ({ language: "ja", type: "vocabulary", promptZh:
 beforeEach(() => { installMockLocalStorage(); __resetSyncEngineForTests(); vi.stubGlobal("indexedDB", new IDBFactory()); setAccountOwner("A"); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const save = (name: string) => withDataLock(() => new SyncingLearningRepository(new LocalStorageLearningRepository(), "A").addItem({ ...input(name), tags: [] }));
+it("reads small account values without cloning unrelated data and keeps exported snapshots isolated", async () => {
+  await withDataLock(() => {
+    accountStorage().setItem("learning-language:large-test-value", "x".repeat(1_000_000));
+    accountStorage().setItem("learning-language:study-preferences:v1", "5");
+  });
+  const clone = vi.spyOn(globalThis, "structuredClone");
+  for (let i = 0; i < 100; i++) expect(accountStorage().getItem("learning-language:study-preferences:v1")).toBe("5");
+  expect(clone).not.toHaveBeenCalled();
+  const snapshot = readAccountSnapshot();
+  snapshot.values["learning-language:study-preferences:v1"] = "20";
+  expect(accountStorage().getItem("learning-language:study-preferences:v1")).toBe("5");
+});
+it("does not rewrite IndexedDB for read-only transactions or unchanged storage values", async () => {
+  await save("甲");
+  const before = readAccountSnapshot().revision;
+  const put = vi.spyOn(IDBObjectStore.prototype, "put");
+  await withDataLock(() => {
+    const value = accountStorage().getItem("learning-language:store")!;
+    accountStorage().setItem("learning-language:store", value);
+    accountStorage().removeItem("learning-language:missing");
+  });
+  expect(put).not.toHaveBeenCalled();
+  expect(readAccountSnapshot().revision).toBe(before);
+});
 it("retries an IndexedDB open failure rather than caching a rejected promise forever", async () => {
   const open = vi.spyOn(indexedDB, "open").mockImplementationOnce(() => { throw new Error("temporary open failure"); });
   await expect(save("甲")).rejects.toThrow("temporary open failure");

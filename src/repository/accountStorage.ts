@@ -8,6 +8,8 @@ export interface AccountSnapshot {
 let owner: string | null = null;
 let generation = 0;
 let transaction: AccountSnapshot | null = null;
+let transactionDirty = false;
+let transactionChanged = false;
 let lockHeld = false;
 let lockOwner: string | null = null;
 let lockGeneration = 0;
@@ -66,7 +68,7 @@ export async function refreshAccountCache(): Promise<void> {
 }
 /** Commit the currently staged snapshot before a remote request that depends on its journal. */
 export async function flushAccountSnapshot(): Promise<void> {
-  if (!transaction) return;
+  if (!transaction || !transactionDirty) return;
   if (lockOwner !== owner || lockGeneration !== generation) throw new Error("帳戶已切換，舊請求不能回寫。");
   const snapshot = structuredClone(transaction);
   snapshot.revision += 1;
@@ -74,6 +76,7 @@ export async function flushAccountSnapshot(): Promise<void> {
     if (readAccountSnapshot(snapshot.owner, false).revision !== transaction.revision) throw new Error("資料已被其他寫入者更新，請重試。");
     window.localStorage.setItem(accountKey(snapshot.owner), JSON.stringify(snapshot));
     transaction = structuredClone(snapshot);
+    transactionDirty = false;
     return;
   }
   const database = await openDatabase();
@@ -87,6 +90,7 @@ export async function flushAccountSnapshot(): Promise<void> {
   });
   durableSnapshots.set(accountKey(snapshot.owner), snapshot);
   transaction = structuredClone(snapshot);
+  transactionDirty = false;
   try { changesChannel?.postMessage({ owner: snapshot.owner, revision: snapshot.revision }); } catch { /* Commit succeeded; notification is best effort. */ }
   // IndexedDB is authoritative; a failed compatibility mirror cannot lose committed data.
   try { window.localStorage.setItem(accountKey(snapshot.owner), JSON.stringify(snapshot)); } catch { /* Retain prior mirror as recovery copy. */ }
@@ -113,9 +117,13 @@ export function replaceAccountValues(values: Record<string, string>): void {
 }
 export function isSyncPaused(): boolean { return typeof window !== "undefined" && accountStorage().getItem("learning-language:sync-paused") === "true"; }
 export function readAccountSnapshot(id: string | null = owner, includeStaged = true): AccountSnapshot {
-  if (includeStaged && transaction?.owner === id) return structuredClone(transaction);
+  return structuredClone(readSnapshotValue(id, includeStaged));
+}
+// Internal reads of immutable strings must not clone every other value in a multi-MB account.
+function readSnapshotValue(id: string | null = owner, includeStaged = true): AccountSnapshot {
+  if (includeStaged && transaction?.owner === id) return transaction;
   const cached = durableSnapshots.get(accountKey(id));
-  if (cached) return structuredClone(cached);
+  if (cached) return cached;
   const storage = window.localStorage;
   const raw = storage.getItem(accountKey(id));
   if (raw !== null) {
@@ -134,7 +142,12 @@ export function readAccountSnapshot(id: string | null = owner, includeStaged = t
 export function atomicAccountWrite<T>(action: () => T): T {
   if (typeof indexedDB !== "undefined" && !transaction) throw new Error("瀏覽器寫入必須透過 mutateRepository／withDataLock 原子交易。");
   if (lockHeld && (lockOwner !== owner || lockGeneration !== generation)) throw new Error("舊帳戶請求已失效，未回寫資料。");
-  if (transaction) return action();
+  if (transaction) {
+    const result = action();
+    transactionDirty = true;
+    transactionChanged = true;
+    return result;
+  }
   const id = owner, epoch = generation;
   const before = readAccountSnapshot();
   transaction = structuredClone(before);
@@ -147,15 +160,15 @@ export function atomicAccountWrite<T>(action: () => T): T {
     window.localStorage.setItem(accountKey(id), JSON.stringify(transaction));
     notifyDataChanged();
     return result;
-  } finally { transaction = null; }
+  } finally { transaction = null; transactionDirty = false; transactionChanged = false; }
 }
 export function accountStorage(): Storage {
   return {
-    get length() { return Object.keys((transaction?.owner === owner ? transaction : readAccountSnapshot()).values).length; },
-    key(index) { return Object.keys((transaction?.owner === owner ? transaction : readAccountSnapshot()).values)[index] ?? null; },
-    getItem(key) { return (transaction?.owner === owner ? transaction : readAccountSnapshot()).values[key] ?? null; },
-    setItem(key, value) { atomicAccountWrite(() => { transaction!.values[key] = String(value); }); },
-    removeItem(key) { atomicAccountWrite(() => { delete transaction!.values[key]; }); },
+    get length() { return Object.keys(readSnapshotValue().values).length; },
+    key(index) { return Object.keys(readSnapshotValue().values)[index] ?? null; },
+    getItem(key) { return readSnapshotValue().values[key] ?? null; },
+    setItem(key, value) { if (readSnapshotValue().values[key] === String(value)) return; atomicAccountWrite(() => { transaction!.values[key] = String(value); }); },
+    removeItem(key) { if (!(key in readSnapshotValue().values)) return; atomicAccountWrite(() => { delete transaction!.values[key]; }); },
     clear() { throw new Error("不可清空帳戶資料"); },
   };
 }
@@ -167,18 +180,23 @@ export async function withDataLock<T>(action: () => T | Promise<T>): Promise<T> 
     if (owner !== id || generation !== epoch) throw new Error("帳戶已切換，請重試。");
     lockHeld = true; lockOwner = id; lockGeneration = epoch;
     const indexed = typeof indexedDB !== "undefined";
+    let cacheChanged = false;
     try {
       if (indexed) {
         const durable = await readDurableSnapshot(id);
         if (owner !== id || generation !== epoch) throw new Error("帳戶已切換，舊請求不能回寫。");
-        if (durable) durableSnapshots.set(accountKey(id), durable);
+        if (durable) {
+          cacheChanged = durableSnapshots.get(accountKey(id))?.revision !== durable.revision;
+          durableSnapshots.set(accountKey(id), durable);
+        }
       }
-      if (typeof window !== "undefined") transaction = structuredClone(readAccountSnapshot(id));
+      if (typeof window !== "undefined") transaction = readAccountSnapshot(id);
+      transactionDirty = false; transactionChanged = false;
       const result = await action();
       if (owner !== id || generation !== epoch) throw new Error("帳戶已切換，舊請求不能回寫。");
-      if (transaction) { await flushAccountSnapshot(); notifyDataChanged(); }
+      if (transaction) { await flushAccountSnapshot(); if (transactionChanged || cacheChanged) notifyDataChanged(); }
       return result;
-    } finally { transaction = null; lockHeld = false; }
+    } finally { transaction = null; transactionDirty = false; transactionChanged = false; lockHeld = false; }
   };
   const acquire = async (): Promise<T> => {
   if (typeof navigator !== "undefined" && navigator.locks) return await navigator.locks.request(accountKey(id), run);
@@ -217,4 +235,4 @@ const changesChannel = typeof window !== "undefined" && typeof BroadcastChannel 
 changesChannel?.addEventListener("message", event => {
   if (event.data?.owner === owner) void refreshAccountCache().catch(() => undefined);
 });
-export function resetAccountStorageForTests(): void { databaseConnection?.close(); databaseConnection = null; owner = null; generation += 1; transaction = null; lockHeld = false; runtimeChain = Promise.resolve(); durableSnapshots.clear(); databasePromise = null; }
+export function resetAccountStorageForTests(): void { databaseConnection?.close(); databaseConnection = null; owner = null; generation += 1; transaction = null; transactionDirty = false; transactionChanged = false; lockHeld = false; runtimeChain = Promise.resolve(); durableSnapshots.clear(); databasePromise = null; }

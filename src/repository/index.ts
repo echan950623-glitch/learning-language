@@ -5,6 +5,8 @@ import { SyncingLearningRepository } from "./syncingRepository";
 import { configureSyncEngine, pullAndMergeRemoteData } from "./sync/syncEngine";
 import type { LearningRepository } from "./types";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { accountStorage } from "./accountStorage";
+import { STORAGE_KEY } from "./schema";
 
 export type {
   LearningRepository,
@@ -75,6 +77,7 @@ export function __resetRepositorySingletonForTests(): void {
   currentCloudSyncUserId = null;
   cloudSyncEpoch += 1;
   lastCloudOptions = null;
+  refreshInFlight = null;
   if (refreshTimer) clearTimeout(refreshTimer);
   if (revisionTimer) clearInterval(revisionTimer);
 }
@@ -109,8 +112,11 @@ function createLocalOnlyRepository(): LearningRepository {
  * 登入當下與「背景 drain 建立別名或重放排程」後都走這條，兩者行為一致；`epoch` 讓已被換掉的設定
  * （登出／換人）之後才 settle 的結果不會覆蓋較新的 singleton。
  */
+let refreshInFlight: { epoch: number; userId: string; promise: Promise<void> } | null = null;
 function refreshFromRemote(options: CloudSyncOptions, epoch: number): Promise<void> {
-  return pullAndMergeRemoteData(options.supabase, options.userId, () => epoch === cloudSyncEpoch && options.userId === currentCloudSyncUserId)
+  if (refreshInFlight?.epoch === epoch && refreshInFlight.userId === options.userId) return refreshInFlight.promise;
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  const promise = pullAndMergeRemoteData(options.supabase, options.userId, () => epoch === cloudSyncEpoch && options.userId === currentCloudSyncUserId)
     .then(() => {
       if (epoch !== cloudSyncEpoch) return;
       if (typeof window === "undefined" || !localStorageIsUsable()) return;
@@ -122,7 +128,11 @@ function refreshFromRemote(options: CloudSyncOptions, epoch: number): Promise<vo
       if (epoch !== cloudSyncEpoch) return;
       console.warn("[learning-language] 雲端下載失敗，稍後重試", error);
       refreshTimer = setTimeout(() => { if (epoch === cloudSyncEpoch) refreshFromRemote(options, epoch); }, 15000);
+    }).finally(() => {
+      if (refreshInFlight?.promise === promise) refreshInFlight = null;
     });
+  refreshInFlight = { epoch, userId: options.userId, promise };
+  return promise;
 }
 
 function engineConfig(options: CloudSyncOptions) {
@@ -162,7 +172,7 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
     return;
   }
 
-  if (options.userId === currentCloudSyncUserId && singleton instanceof SyncingLearningRepository) {
+  if (options.userId === currentCloudSyncUserId) {
     // 同一個使用者、已經是同步模式：只刷新 syncEngine 持有的 client 參照＋踢一次背景
     // drain（涵蓋 token 剛刷新、outbox 剛好有殘留的情況），不重新包裝、不重新 pull-merge。
     configureSyncEngine(engineConfig(options));
@@ -184,7 +194,15 @@ export function configureCloudSync(options: CloudSyncOptions | null): void {
 
   singleton = inner ? new SyncingLearningRepository(inner, options.userId) : new MemoryLearningRepository();
 
-  accountInitialization = refreshAccountCache().then(() => refreshFromRemote(options, epoch)).catch(() => undefined);
+  accountInitialization = refreshAccountCache().then(() => {
+    if (epoch !== cloudSyncEpoch) return;
+    // Returning devices can use their durable account immediately. A first,
+    // empty device still waits for a complete download before it plans study.
+    const saved = accountStorage().getItem(STORAGE_KEY);
+    const hasSavedItems = saved !== null && JSON.parse(saved).items?.length > 0;
+    const refresh = refreshFromRemote(options, epoch);
+    return hasSavedItems ? undefined : refresh;
+  }).catch(() => undefined);
   watchRemoteRevision(options, epoch);
 }
 

@@ -1,7 +1,7 @@
 import { accountStorage, getAccountOwner, getAccountGeneration, withDataLock, isSyncPaused, flushAccountSnapshot } from "../accountStorage";
 import { applySyncedPreferences, type StudyQuestionCount, type DailyNewItemCap } from "../../lib/studyPreferences";
 import { fetchAllRows } from "../../lib/supabase/pagination";
-import { fetchStableSnapshot } from "../../lib/supabase/snapshot";
+import { fetchStableSnapshotWithRevision, readLearningRevision } from "../../lib/supabase/snapshot";
 import { canonicalJson } from "../../domain/learningPractice";
 /**
  * 背景同步引擎：把 outbox 依序送到 Supabase（drain），並在登入／啟動時把遠端資料
@@ -30,6 +30,7 @@ import {
   sanitizeStore,
   writePersistedStore,
   SCHEMA_VERSION,
+  STORAGE_KEY,
   type PersistedStore,
 } from "../schema";
 import {
@@ -983,14 +984,22 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
   const valid = () => isCurrent() && epoch === getAccountGeneration();
   setStatus({ enabled: true, phase: "syncing", pendingCount: outboxPendingCount() });
   try {
-    const [itemsRes, scheduleRes, sessionsRes, attemptsRes, preferencesRes, plansRes] = await fetchStableSnapshot(supabase, () => Promise.all([
+    const revision = await readLearningRevision(supabase);
+    if (!valid()) return;
+    const revisionKey = `learning-language:sync-remote-revision:${userId}`;
+    if (accountStorage().getItem(STORAGE_KEY) !== null && accountStorage().getItem(revisionKey) === revision) {
+      setStatus({ enabled: true, phase: "idle", pendingCount: outboxPendingCount(), downloadError: null });
+      return;
+    }
+    const snapshot = await fetchStableSnapshotWithRevision(supabase, () => Promise.all([
       fetchAllRows((from, to) => supabase.from("learning_items").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
       fetchAllRows((from, to) => supabase.from("schedule_states").select("*").eq("user_id", userId).order("learning_item_id").order("ability").range(from, to)).then(data => ({ data, error: null, status: 200 })),
       fetchAllRows((from, to) => supabase.from("study_sessions").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
       fetchAllRows((from, to) => supabase.from("review_attempts").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
       fetchAllRows((from, to) => supabase.from("user_preferences").select("*").eq("user_id", userId).order("user_id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
       fetchAllRows((from, to) => supabase.from("daily_learning_plans").select("*").eq("user_id", userId).order("id").range(from, to)).then(data => ({ data, error: null, status: 200 })),
-    ]));
+    ]), revision);
+    const [itemsRes, scheduleRes, sessionsRes, attemptsRes, preferencesRes, plansRes] = snapshot.value;
 
     if (!valid()) return;
     await withDataLock(() => {
@@ -1028,6 +1037,7 @@ export async function pullAndMergeRemoteData(supabase: SupabaseClient, userId: s
       applySyncedPreferences({ dailyQuestionCount: remotePreferences.daily_question_count, dailyNewItemCap: remotePreferences.daily_new_item_cap });
     }
     writePersistedStore(mergedStore);
+    accountStorage().setItem(revisionKey, snapshot.revision);
     });
     if (!valid()) return;
     setStatus({ enabled: true, phase: "idle", pendingCount: outboxPendingCount(), lastDownloadedAt: nowIso(), downloadError: null });
