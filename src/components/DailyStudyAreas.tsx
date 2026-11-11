@@ -42,7 +42,5 @@ export function DailyStudyAreas({ language }: { language: Language }) {
     </div> : null}
     {data && !remainingWords && !enrolledToday ? <p className="mt-3 text-xs leading-5 text-foreground-muted">尚無可安排的新字時，請先在 GPT 預覽並確認加入教材。</p> : null}
     {error ? <p role="alert" className="mt-3 text-sm text-danger">{error}</p> : null}
-    <p className="mt-3 text-xs leading-5 text-foreground-muted">新字與複習分開出題；未到期內容不會反覆排入複習。新字不足 50 個時，按實際內容安排。</p>
-    <p className="mt-2 text-xs leading-5 text-foreground-muted">複習間隔：隔天確認 → 3 → 5 → 7 → 14 天；各階段無提示首答通過後，熟練內容退出日常複習。</p>
   </section>;
 }

@@ -39,9 +39,6 @@ function JapaneseHome() {
     <div className="flex flex-col gap-5">
       <header>
         <h1 className="text-2xl font-semibold text-foreground">日文學習</h1>
-        <p className="mt-1 text-sm text-foreground-muted">
-          直接開始，系統會安排需要補強與到期驗證的內容。
-        </p>
       </header>
       {error ? (
         <p role="alert" className="text-sm text-danger">

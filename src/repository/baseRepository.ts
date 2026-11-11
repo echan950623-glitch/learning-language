@@ -31,6 +31,7 @@ import { accountStorage } from "./accountStorage";
 import { verificationState } from "../domain/automaticVerification";
 import { activeEnglishVariant, englishModeVerified, englishStatus, isEnglishPractice, freezeEnglishQuestion } from "../domain/englishPractice";
 import { freezeVocabularyVerification, vocabularyVerificationQuestions } from "../domain/verificationContexts";
+import { choiceIsAssisted } from "../domain/practicePresentation";
 import { isLearningPractice, isCoachReport, isPracticeEligible, freezePracticeQuestion, spacePracticeUnits, recentlyExposed, canonicalJson, activePracticeVariant } from "../domain/learningPractice";
 
 /**
@@ -489,7 +490,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
     }
 
     if (session.ruleVersion === 2) return this.recordEvidence(next, session, item, expectedUnit, { ...input,
-      usedHint: input.usedHint || recentlyExposed(expectedUnit.itemSnapshot ?? item, next.reviewAttempts.filter(attempt => attempt.language === item.language), input.now) });
+      usedHint: input.usedHint || choiceIsAssisted(expectedUnit.itemSnapshot ?? item, input.answerMode) || recentlyExposed(expectedUnit.itemSnapshot ?? item, next.reviewAttempts.filter(attempt => attempt.language === item.language), input.now) });
 
     const scheduleIndex = next.scheduleStates.findIndex(
       (s) => s.learningItemId === input.learningItemId && s.ability === input.ability

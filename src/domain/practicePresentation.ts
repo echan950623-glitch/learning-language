@@ -48,7 +48,7 @@ export function practiceChoices(item: LearningItem): string[] {
   if (item.englishPractice) return activeEnglishVariant(item)?.choices.map(c => c.text) ?? [];
   const p = item.practice,
     v = activePracticeVariant(item);
-  if (!p || !v || (p.kind === "conjugation" && p.capability === "production"))
+  if (!p || !v || p.capability !== "recognition")
     return [];
   const correct = new Set(
     [v.answer, ...v.acceptedAnswers].map(normalizeForComparison),
@@ -66,26 +66,6 @@ export function practiceChoices(item: LearningItem): string[] {
   let pool = p.variants.map((q) => q.answer);
   if (p.conceptKey === "verb:class") pool = ["第一類", "第二類", "第三類"];
   if (p.kind === "particle") pool = ["は", "が", "を", "に", "で", "へ", "と"];
-  if (p.kind === "structure" && p.capability === "production") {
-    const parts = v.prompt.split("\n").at(-1)!.split("／");
-    if (parts.length < 3) return [];
-    pool = [
-      parts.slice().reverse().join(""),
-      [parts.at(-1), ...parts.slice(0, -1)].join(""),
-      [...parts.slice(1), parts[0]].join(""),
-    ];
-  }
-  if (
-    p.kind === "grammar" &&
-    p.capability === "usage" &&
-    v.answer.endsWith("います")
-  ) {
-    pool = [
-      v.answer.replace(/います$/, "いました"),
-      v.answer.replace(/います$/, "いません"),
-      v.answer.replace(/います$/, "いませんでした"),
-    ];
-  }
   const seen = new Set<string>();
   const wrong = pool
     .filter((answer) => {
@@ -106,9 +86,9 @@ export function practiceChoices(item: LearningItem): string[] {
   return choices;
 }
 /** Choice cues cannot establish independent production/usage recall evidence. */
-export function choiceIsAssisted(item: LearningItem): boolean {
+export function choiceIsAssisted(item: LearningItem, answerMode: "choice" | "text" = practiceChoices(item).length ? "choice" : "text"): boolean {
   return (
-    practiceChoices(item).length > 0 &&
+    answerMode === "choice" &&
     !item.englishPractice && item.practice?.capability !== "recognition"
   );
 }

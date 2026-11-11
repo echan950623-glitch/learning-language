@@ -67,11 +67,13 @@ describe("learner-facing answer choices preserve stored evidence", () => {
     ).toHaveLength(1);
     expect(grammar).toEqual(original);
   });
-  it("marks conversion of usage and production to choices assisted, preventing independent recall evidence", () => {
-    expect(choiceIsAssisted(item("grammar:teiru:usage"))).toBe(true);
-    expect(choiceIsAssisted(item("structure:order:production"))).toBe(true);
-    expect(practiceChoices(item("structure:order:production"))).toHaveLength(4);
-    expect(practiceChoices(item("collocation:yakusoku:usage"))).toHaveLength(3);
+  it("requires typed production and usage; explicit choice answers remain assisted", () => {
+    for (const entry of getJapanesePracticeCatalog().filter(e => e.practice.capability !== "recognition")) {
+      const question = item(entry.id);
+      expect(practiceChoices(question), entry.id).toEqual([]);
+      expect(choiceIsAssisted(question), entry.id).toBe(false);
+      expect(choiceIsAssisted(question, "choice"), entry.id).toBe(true);
+    }
   });
   it("offers semantic reading and particle choices, removing accepted alternatives from distractors", () => {
     expect(practiceChoices(item("reading:daily:recognition"))).toHaveLength(3);
@@ -79,7 +81,7 @@ describe("learner-facing answer choices preserve stored evidence", () => {
     p.practice!.variants[0].acceptedAnswers = ["は"];
     p.acceptedAnswers = ["は"];
     expect(practiceChoices(p)).not.toContain("は");
-    expect(practiceChoices(p)).toContain("が");
+    expect(practiceChoices(p)).toEqual([]);
   });
   it("does not invent choices for one-answer custom questions or vocabulary", () => {
     const p = item("reading:daily:recognition");

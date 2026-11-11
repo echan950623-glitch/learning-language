@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { signOutCurrentDevice } from "@/lib/auth/signOutCurrentDevice";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { getSyncDiagnostics, getSyncStatus, subscribeSyncStatus, type SyncStatus } from "@/repository/sync/syncEngine";
 
@@ -12,6 +13,7 @@ const SERVER_SNAPSHOT: SyncStatus = { enabled: false, phase: "idle", pendingCoun
 
 export function AccountSyncPanel() {
   const [email, setEmail] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const [checked, setChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sync = useSyncExternalStore(subscribeSyncStatus, getSyncStatus, () => SERVER_SNAPSHOT);
@@ -47,6 +49,13 @@ export function AccountSyncPanel() {
     return () => { active = false; unsubscribe?.(); };
   }, []);
 
+  async function signOut() {
+    setSigningOut(true); setError(null);
+    try { setError(await signOutCurrentDevice(createBrowserClient())); }
+    catch { setError("無法確認登出狀態，請重新開啟 App。"); }
+    finally { setSigningOut(false); }
+  }
+
   return (
     <section aria-labelledby="account-sync" className="rounded-2xl border border-border bg-surface p-4">
       <h2 id="account-sync" className="text-sm font-medium text-foreground">帳戶與雲端同步</h2>
@@ -64,6 +73,7 @@ export function AccountSyncPanel() {
           <p className="text-xs text-foreground-muted">最後下載成功：{sync.lastDownloadedAt ? new Date(sync.lastDownloadedAt).toLocaleString("zh-TW") : "尚未成功下載"}</p>
           {sync.downloadError && <p role="alert" className="text-xs text-danger">下載錯誤：{sync.downloadError}</p>}
           <button type="button" className="min-h-12 rounded-xl border border-border px-4" onClick={() => { kick(); refreshCloudData(); }}>手動同步</button>
+          <button type="button" disabled={signingOut} className="min-h-12 rounded-xl border border-border px-4 disabled:opacity-50" onClick={signOut}>{signingOut ? "登出中…" : "登出這台裝置"}</button>
           {diagnostics ? (
             <details className="text-xs text-foreground-muted">
               <summary className="cursor-pointer">同步診斷（唯讀，可截圖回報）</summary>

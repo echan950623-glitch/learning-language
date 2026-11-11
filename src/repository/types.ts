@@ -44,6 +44,7 @@ export interface StudySessionFilter extends LanguageFilter {
 }
 
 export interface RecordGradedAttemptInput {
+  answerMode?: "choice" | "text";
   rawAnswer?: string;
   normalizedAnswer?: string;
   sessionId: string;
