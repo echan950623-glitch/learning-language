@@ -6,6 +6,8 @@ Next.js 16 / React 19 / TypeScript 的日文與英文學習 App。使用本機�
 
 先讀 [Claude 交接說明](docs/claude-handoff.md)。整合 11 月正式站同步修正與 10 月未入 Git 的題型對齊、登出入口和首頁文字精簡；PWA shell v37。使用 Node.js 24（`.nvmrc`）；雲端同步設定參考 `.env.example`。
 
+驗收：乾淨 `npm ci`、lint、型別檢查、666 項測試與正式建置通過；22 項外部測試略過。詳見交接文件的驗證紀錄。
+
 ## 雲端 workspace 開發
 
 使用 Node.js 24 與 npm，從 `main` 開始：

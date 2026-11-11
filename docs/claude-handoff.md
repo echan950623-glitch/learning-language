@@ -21,3 +21,7 @@ November sync fixes keep local study responsive during ordinary network waits, r
 Production: https://learning-language-three.vercel.app/ . No new database migration is needed for this handoff. Existing remote migration timestamps may differ from local filenames: reconcile SQL and names before applying. Git pushes may trigger Vercel deployment. Do not manufacture real-user answers or copy progress to another account. Shared custom vocabulary is not implemented.
 
 UI is practical and concise. No pronunciation/audio feature requested. More context variants, maintenance reviews and lapse-policy changes remain proposals, not completed features.
+
+## Handoff verification (2026-11-11)
+
+Runtime commit ae37276325a2c928ab3bf48da04a5c3c09a02c0b was checked from GitHub in an isolated Vercel preview build (dpl_HfYjFhDQ27RK1zd9TbSVHpcGnLay, READY): npm ci, npm run lint, npm run typecheck, npm test and npm run build all passed. Tests: 666 passed, 22 skipped (external integrations). Final handoff commit adds only this verification record. No production database or real learning records were changed. Physical-device login/sync tests were not performed in this check.
