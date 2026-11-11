@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { createDailyAreaPlan, dailyAreaUnits } from "@/domain/dailyStudyAreas";
+import { createDailyAreaPlan, dailyAreaUnits, NEW_WORD_BATCH_SIZE } from "@/domain/dailyStudyAreas";
+import { readDailyNewItemCap } from "@/lib/studyPreferences";
 import { learningDay } from "@/domain/learningRules";
 import type { Language } from "@/domain/types";
 import { getRepository } from "@/repository";
@@ -11,7 +12,9 @@ import { AbandonPracticeButton } from "./AbandonPracticeButton";
 export function DailyStudyAreas({ language }: { language: Language }) {
   const { data, error } = usePracticeData(language);
   const now = new Date();
-  const plan = data ? createDailyAreaPlan(data.items, data.schedules, now, getRepository().listDailyPlans().find(p => p.language === language && p.date === learningDay(now)), data.attempts, language) : undefined;
+  // Saved preferences live in browser storage, so they are read only after the account data has loaded.
+  const cap = data ? readDailyNewItemCap() : undefined;
+  const plan = data ? createDailyAreaPlan(data.items, data.schedules, now, getRepository().listDailyPlans().find(p => p.language === language && p.date === learningDay(now)), data.attempts, language, cap) : undefined;
   const newUnits = plan ? dailyAreaUnits(plan, "new") : [];
   const reviews = plan ? dailyAreaUnits(plan, "review") : [];
   const remainingWords = new Set(newUnits.map(u => u.learningItemId)).size;
@@ -20,13 +23,13 @@ export function DailyStudyAreas({ language }: { language: Language }) {
   return <section aria-labelledby={`${language}-daily-study`} className="rounded-2xl border border-border bg-surface p-4">
     <h2 id={`${language}-daily-study`} className="mb-3 font-semibold text-foreground">今日學習</h2>
     <div className="grid grid-cols-2 gap-3">
-      {([{ area: "new", title: "新字", description: "每天最多 50 個新字", count: !data ? "載入進度…" : `${remainingWords} 個待學`, label: "開始學新字", available: remainingWords > 0 },
+      {([{ area: "new", title: "新字", description: cap === undefined ? "依設定的每日上限安排" : `每天最多 ${cap} 個，每輪約 ${NEW_WORD_BATCH_SIZE} 個`, count: !data ? "載入進度…" : `${remainingWords} 個待學`, label: "開始學新字", available: remainingWords > 0 },
         { area: "review", title: "複習", description: "到期與待補強內容全部列入", count: !data ? "載入進度…" : `${reviews.length} 題待複習`, label: "開始複習", available: reviews.length > 0 }] as const).map(card =>
         <article key={card.area} className="flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-background p-3">
           <h3 className="text-lg font-semibold text-foreground">{card.title}</h3>
           <p className="text-xs leading-5 text-foreground-muted">{card.description}</p>
           <p className="text-sm font-medium text-foreground">{card.count}</p>
-          <p className="text-xs text-foreground-muted">{card.area === "new" ? `今日已引入 ${enrolledToday} / 50 個` : "不限題數，可中途離開後繼續"}</p>
+          <p className="text-xs text-foreground-muted">{card.area === "new" ? cap === undefined ? "載入進度…" : `今日已引入 ${enrolledToday} / ${Math.max(cap, plan?.newItemIds.length ?? 0)} 個` : "不限題數，可中途離開後繼續"}</p>
           <div className="mt-auto pt-2">
             {data && card.available && !session ? <Link href={`/study?language=${language}&area=${card.area}`} className="block min-h-12 rounded-xl bg-primary px-2 py-3 text-center text-sm font-semibold text-primary-foreground">{card.label}</Link> :
               <button type="button" disabled className="min-h-12 w-full rounded-xl bg-primary px-2 py-3 text-sm font-semibold text-primary-foreground opacity-40">{session ? "先繼續目前練習" : !data ? "載入中…" : card.area === "new" ? "目前沒有新字" : "目前無待複習"}</button>}

@@ -6,7 +6,7 @@ import {
 } from "../../repository";
 import { LocalStorageLearningRepository } from "../../repository/localStorageRepository";
 import { prepareDailyPlan } from "./dailyPlan";
-import { readDailyNewItemCap } from "../../lib/studyPreferences";
+import { readDailyNewItemCap, saveDailyNewItemCap } from "../../lib/studyPreferences";
 import { setAccountOwner } from "../../repository/accountStorage";
 import { createDailyAreaPlan, dailyAreaUnits } from "../../domain/dailyStudyAreas";
 import * as browserClient from "../../lib/supabase/client";
@@ -85,17 +85,35 @@ it("without a prior cloud reservation offline new words remain unavailable", asy
   expect(dailyAreaUnits(plan, "new")).toEqual([]);
   expect(plan.reason).toContain("連線後取得今天的新字額度");
 });
-it("persists the 50-word quota for the new area and preserves it across reload without a 20-unit plan budget", async () => {
+it("uses the saved quota for the new area without overwriting it, beyond the 20-unit plan budget, across reload", async () => {
   const now = new Date("2026-10-13T06:00:00Z");
   await mutateRepository(repository => {
     for (let index = 0; index < 60; index++) repository.addItem({ language: "ja", type: "vocabulary", promptZh: `詞義 ${index}`, answer: `単語${index}`, source: "ai", tags: [] });
   });
+  saveDailyNewItemCap(30);
   const first = await prepareDailyPlan(now, "ja", "new");
-  expect(first.newItemIds).toHaveLength(50);
-  expect(first.units).toHaveLength(50);
-  expect(readDailyNewItemCap()).toBe(50);
+  expect(first.newItemIds).toHaveLength(30);
+  expect(first.units).toHaveLength(30);
+  expect(first.newItemCap).toBe(30);
+  expect(readDailyNewItemCap()).toBe(30);
   __resetRepositorySingletonForTests();
   expect((await prepareDailyPlan(now, "ja", "new")).newItemIds).toEqual(first.newItemIds);
+});
+it("defaults the new area to the default quota and keeps today's reservation when the quota is lowered", async () => {
+  const now = new Date("2026-10-13T06:00:00Z");
+  await mutateRepository(repository => {
+    for (let index = 0; index < 30; index++) repository.addItem({ language: "ja", type: "vocabulary", promptZh: `詞義 ${index}`, answer: `単語${index}`, source: "ai", tags: [] });
+  });
+  expect((await prepareDailyPlan(now, "ja", "new")).newItemIds).toHaveLength(5);
+  saveDailyNewItemCap(20);
+  const raised = await prepareDailyPlan(now, "ja", "new");
+  expect(raised.newItemIds).toHaveLength(20);
+  saveDailyNewItemCap(10);
+  const lowered = await prepareDailyPlan(now, "ja", "new");
+  expect(lowered.newItemIds).toEqual(raised.newItemIds);
+  expect(readDailyNewItemCap()).toBe(10);
+  const tomorrow = await prepareDailyPlan(new Date("2026-10-14T06:00:00Z"), "ja", "new");
+  expect(tomorrow.newItemIds).toHaveLength(10);
 });
 it("persists explicitly added guest content and the daily plan across repository reload", async () => {
   const now = new Date("2026-10-03T06:00:00Z");
