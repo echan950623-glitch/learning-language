@@ -7,7 +7,7 @@ import { isDailyPlan } from "@/repository/schema";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { drainOutboxFully } from "@/repository/sync/syncEngine";
 import { loadAliasStore, resolveCanonicalItemId, resolveLocalItemIdForCanonical, translatePlan } from "@/repository/sync/alias";
-import { readBusyMode, readDailyNewItemCap, saveDailyNewItemCap } from "@/lib/studyPreferences";
+import { readBusyMode, readDailyNewItemCap } from "@/lib/studyPreferences";
 import { createDailyAreaPlan, type DailyStudyArea } from "@/domain/dailyStudyAreas";
 
 /** Network reservation precedes a local session; never hold a browser data lock while waiting for HTTP. */
@@ -15,14 +15,8 @@ export async function prepareDailyPlan(now = new Date(), language: Language = "j
   const owner = getAccountOwner();
   const generation = getAccountGeneration();
   const current = () => owner === getAccountOwner() && generation === getAccountGeneration();
-  // The cloud reservation also checks the saved account preference. Save and drain it before requesting 50 words.
-  if (area === "new" && readDailyNewItemCap() !== 50) {
-    await mutateRepository(() => {
-      if (!current()) throw new Error("帳戶已切換，新字額度未更新。");
-      saveDailyNewItemCap(50);
-    });
-  }
-  const cap = area ? 50 : readDailyNewItemCap();
+  // The learner's saved quota applies everywhere; the cloud reservation takes the lower of it and this request.
+  const cap = readDailyNewItemCap();
   const busy = area ? false : readBusyMode();
   let previouslyReserved: DailyPlan | undefined;
   // Planning shares the same durable account snapshot as explicitly added content.
@@ -31,7 +25,7 @@ export async function prepareDailyPlan(now = new Date(), language: Language = "j
     const existing = repository.listDailyPlans().find(saved => saved.date === learningDay(now) && saved.language === language);
     previouslyReserved = existing;
     const items = repository.listItems({ language }), schedules = repository.listScheduleStates({ language }), attempts = repository.listReviewAttempts({ language });
-    return repository.saveDailyPlan(area ? createDailyAreaPlan(items, schedules, now, existing, attempts, language) : createDailyPlan(items, schedules, now, cap, busy, existing, undefined, attempts, language));
+    return repository.saveDailyPlan(area ? createDailyAreaPlan(items, schedules, now, existing, attempts, language, cap) : createDailyPlan(items, schedules, now, cap, busy, existing, undefined, attempts, language));
   });
   const existing = previouslyReserved;
   if (owner && navigator.onLine && !isSyncPaused()) {

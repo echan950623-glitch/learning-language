@@ -11,7 +11,7 @@
 
 import type { Language, LearningItem, StudySession, StudySessionPlannedUnit, DailyPlan } from "@/domain/types";
 import { limitVerificationUnits } from "@/domain/automaticVerification";
-import { dailyAreaUnits, type DailyStudyArea } from "@/domain/dailyStudyAreas";
+import { dailyAreaUnits, newWordBatchUnits, type DailyStudyArea } from "@/domain/dailyStudyAreas";
 import { buildTodayQueue, limitTodayQueue } from "@/domain/queue";
 import { describePersistenceError, type LearningRepository } from "@/repository";
 import {
@@ -189,7 +189,7 @@ export function initializeStudySession(
 
   if (dailyPlan) {
     const completed = new Set(dailyPlan.completedUnitKeys);
-    const units = area ? dailyAreaUnits(dailyPlan, area) : limitVerificationUnits(dailyPlan.units.filter(unit => !completed.has(`${unit.learningItemId}:${unit.ability}`)), items, repository.listScheduleStates({ language }), repository.listReviewAttempts({ language }), dailyPlan.busy ? Math.min(5, questionCount) : questionCount);
+    const units = area === "new" ? newWordBatchUnits(dailyAreaUnits(dailyPlan, area)) : area ? dailyAreaUnits(dailyPlan, area) : limitVerificationUnits(dailyPlan.units.filter(unit => !completed.has(`${unit.learningItemId}:${unit.ability}`)), items, repository.listScheduleStates({ language }), repository.listReviewAttempts({ language }), dailyPlan.busy ? Math.min(5, questionCount) : questionCount);
     if (!units.length) return { phase: "empty" };
     try {
       const session = repository.getOrCreateInProgressSession(language, units, now, { mode: "today", dailyPlanId: dailyPlan.id, timeZone: dailyPlan.timeZone });

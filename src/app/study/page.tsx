@@ -814,6 +814,15 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
         </section>
 
         <div className="flex flex-col gap-2">
+          {area === "new" ? (
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="rounded-xl bg-primary px-4 py-3 text-center text-sm font-semibold text-primary-foreground"
+            >
+              繼續下一輪新字
+            </button>
+          ) : null}
           <Link
             href={language === "en" ? "/progress?language=en" : "/progress"}
             className="rounded-xl bg-primary px-4 py-3 text-center text-sm font-semibold text-primary-foreground"

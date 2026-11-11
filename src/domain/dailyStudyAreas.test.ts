@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDailyAreaPlan, dailyAreaUnits } from "./dailyStudyAreas";
+import { createDailyAreaPlan, dailyAreaUnits, newWordBatchUnits, NEW_WORD_BATCH_SIZE } from "./dailyStudyAreas";
 import { getEnglishPracticeCatalog } from "./englishPracticeCatalog";
 import { MemoryLearningRepository } from "../repository/memoryRepository";
 import { createEmptyStore, isStudySession } from "../repository/schema";
@@ -64,7 +64,7 @@ describe("separate daily new-word and review areas", () => {
     const initialized = initializeStudySession(repo, now, 5, 50, plan, "en", "new");
     expect(initialized.phase).toBe("active");
     if (initialized.phase !== "active") throw new Error("new session missing");
-    expect(initialized.session.plannedUnits).toHaveLength(50);
+    expect(initialized.session.plannedUnits).toHaveLength(NEW_WORD_BATCH_SIZE);
     expect(initialized.session.plannedUnits.every(u => u.ability === "meaning" && u.requiresIntroduction)).toBe(true);
     expect(initialized.session.plannedUnits.some(u => u.learningItemId === known.id)).toBe(false);
     const resumed = initializeStudySession(repo, now, 5, 50, plan, "en", "review");
@@ -78,5 +78,36 @@ describe("separate daily new-word and review areas", () => {
     const repo = new MemoryLearningRepository({ ...createEmptyStore(), items });
     repo.saveDailyPlan(plan);
     expect(initializeStudySession(repo, now, 5, 50, plan, "ja", "review")).toEqual({ phase: "empty" });
+  });
+  it("limits the plan to the learner's own quota", () => {
+    const items = Array.from({ length: 30 }, (_, n) => item(`new-${n}`));
+    const plan = createDailyAreaPlan(items, [], now, undefined, [], "ja", 10);
+    expect(plan.newItemCap).toBe(10);
+    expect(plan.newItemIds).toHaveLength(10);
+    expect(createDailyAreaPlan(items, [], now, undefined, [], "ja", 0).newItemIds).toEqual([]);
+  });
+  it("starts a new-word round with a few words and leaves the rest of the quota for later rounds", () => {
+    const items = Array.from({ length: 30 }, (_, n) => item(`new-${n}`));
+    const plan = createDailyAreaPlan(items, [], now, undefined, [], "ja", 20);
+    const repo = new MemoryLearningRepository({ ...createEmptyStore(), items });
+    repo.saveDailyPlan(plan);
+    const initialized = initializeStudySession(repo, now, 5, 20, plan, "ja", "new");
+    if (initialized.phase !== "active") throw new Error("new session missing");
+    expect(initialized.session.plannedUnits.map(u => u.learningItemId)).toEqual(plan.newItemIds.slice(0, NEW_WORD_BATCH_SIZE));
+    expect(dailyAreaUnits(plan, "new")).toHaveLength(20);
+  });
+  it("folds a short tail into the round so no round introduces fewer than four words", () => {
+    const unit = (id: string, intro = true) => ({ learningItemId: id, ability: intro ? "recall" as const : "reading" as const, kind: "new" as const, requiresIntroduction: intro });
+    const words = (count: number) => Array.from({ length: count }, (_, n) => unit(`w${n}`));
+    expect(newWordBatchUnits(words(8))).toHaveLength(8);
+    expect(newWordBatchUnits(words(9))).toHaveLength(5);
+    expect(newWordBatchUnits(words(3))).toHaveLength(3);
+  });
+  it("finishes words already introduced today before adding unseen ones", () => {
+    const unit = (id: string, intro: boolean) => ({ learningItemId: id, ability: intro ? "recall" as const : "reading" as const, kind: "new" as const, requiresIntroduction: intro });
+    const units = [...Array.from({ length: 12 }, (_, n) => unit(`unseen-${n}`, true)), ...Array.from({ length: 7 }, (_, n) => unit(`started-${n}`, false))];
+    const batch = newWordBatchUnits(units);
+    expect(batch.filter(u => !u.requiresIntroduction).map(u => u.learningItemId)).toEqual(["started-0", "started-1", "started-2", "started-3", "started-4"]);
+    expect(batch.filter(u => u.requiresIntroduction).map(u => u.learningItemId)).toEqual(["unseen-0", "unseen-1", "unseen-2", "unseen-3", "unseen-4"]);
   });
 });
