@@ -6,9 +6,9 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useHomeLanguage } from "@/lib/homeLanguage";
 
 const NAV_ITEMS = [
-  { href: "/", label: "首頁", icon: "🏠" },
-  { href: "/progress", label: "進度", icon: "📊" },
-  { href: "/settings", label: "設定", icon: "⚙️" },
+  { href: "/", label: "首頁" },
+  { href: "/progress", label: "進度" },
+  { href: "/settings", label: "設定" },
 ] as const;
 
 /**
@@ -24,9 +24,9 @@ function BottomNavigation() {
   return (
     <nav
       aria-label="主要導覽"
-      className="sticky bottom-0 z-10 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+      className="sticky bottom-0 z-10 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur"
     >
-      <ul className="mx-auto flex w-[94%] max-w-xl items-stretch justify-between">
+      <ul className="mx-auto flex w-[88%] max-w-xl items-stretch justify-between">
         {NAV_ITEMS.map((item) => {
           const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (
@@ -34,13 +34,11 @@ function BottomNavigation() {
               <Link
                 href={item.href === "/progress" && language === "en" ? "/progress?language=en" : item.href}
                 aria-current={isActive ? "page" : undefined}
-                className={`flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors ${
-                  isActive ? "text-primary" : "text-foreground-muted hover:text-foreground"
+                className={`relative flex min-h-14 items-center justify-center text-sm tracking-wide transition-colors ${
+                  isActive ? "font-semibold text-foreground" : "text-foreground-muted hover:text-foreground"
                 }`}
               >
-                <span aria-hidden="true" className="text-lg leading-none">
-                  {item.icon}
-                </span>
+                {isActive ? <span aria-hidden="true" className="absolute inset-x-[30%] top-0 h-0.5 bg-foreground" /> : null}
                 {item.href === "/progress" && language === "en" ? "英文進度" : item.label}
               </Link>
             </li>

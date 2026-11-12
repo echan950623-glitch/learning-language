@@ -62,9 +62,9 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-5 py-6">
+    <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-8 pb-10 pt-8">
       <header>
-        <h1 className="text-xl font-semibold text-foreground">學習設定</h1>
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">學習設定</h1>
         <p className="mt-1 text-sm text-foreground-muted">調整自主練習的題數與每日新字上限；新字與到期複習分開安排。</p>
       </header>
 
@@ -72,7 +72,7 @@ export default function SettingsPage() {
       <MigrationPanel />
       <DataSafetyPanel />
 
-      <section aria-labelledby="question-count" className="rounded-2xl border border-border bg-surface p-4">
+      <section aria-labelledby="question-count" className="border-t border-border pt-5">
         <h2 id="question-count" className="text-sm font-medium text-foreground">
           自主練習每輪題數
         </h2>
@@ -106,7 +106,7 @@ export default function SettingsPage() {
         {error ? <p role="alert" className="mt-3 text-xs text-danger">{error}</p> : null}
       </section>
 
-      <section aria-labelledby="new-item-cap" className="rounded-2xl border border-border bg-surface p-4">
+      <section aria-labelledby="new-item-cap" className="border-t border-border pt-5">
         <h2 id="new-item-cap" className="text-sm font-medium text-foreground">每日新字上限</h2>
         <p className="mt-1 text-xs leading-5 text-foreground-muted">各語言分開計算，新字專區每輪約 {NEW_WORD_BATCH_SIZE} 個，做完再開下一輪。重新整理或跨輪不會重置今日額度；補讀音不重複計算新字。</p>
         <div className="mt-4 grid grid-cols-4 gap-3" role="radiogroup" aria-labelledby="new-item-cap">
@@ -134,7 +134,7 @@ export default function SettingsPage() {
         {capError ? <p role="alert" className="mt-3 text-xs text-danger">{capError}</p> : null}
       </section>
 
-      <section aria-labelledby="review-arrangement" className="rounded-2xl border border-border bg-surface p-4">
+      <section aria-labelledby="review-arrangement" className="border-t border-border pt-5">
         <h2 id="review-arrangement" className="text-sm font-medium text-foreground">複習安排</h2>
         <p className="mt-2 text-sm leading-6 text-foreground-muted">複習專區列出所有到期與待補強內容，不限題數；可中途離開，之後繼續。</p>
         <p className="mt-2 text-sm leading-6 text-foreground-muted">新字隔天確認，之後依上次通過時間間隔 3、5、7、14 天複習。無提示首答正確才前進；提示後答對保留階段，答錯重設，兩者都隔天再確認。熟練後退出日常出題。</p>

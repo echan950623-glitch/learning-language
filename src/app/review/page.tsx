@@ -64,7 +64,7 @@ export default function ReviewPage() {
 
   if (!data) {
     return (
-      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6" aria-live="polite">
+      <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6" aria-live="polite">
         <div className="h-7 w-32 animate-pulse rounded bg-surface-muted" />
         <div className="h-44 animate-pulse rounded-2xl bg-surface-muted" />
         <div className="h-44 animate-pulse rounded-2xl bg-surface-muted" />
@@ -76,16 +76,16 @@ export default function ReviewPage() {
   const fullSessionCount = Math.min(data.questionCount, data.fullUnits.length);
 
   return (
-    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-5 py-6">
+    <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-8 pb-10 pt-8">
       <header>
-        <h1 className="text-xl font-semibold text-foreground">自主複習</h1>
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">自主複習</h1>
         <p className="mt-1 text-sm leading-6 text-foreground-muted">
           不用等排程到期，隨時從錯題或所有練過的內容開始複習。
         </p>
       </header>
 
       {data.hasInProgressSession ? (
-        <section className="rounded-2xl border border-primary bg-surface p-4" aria-labelledby="active-session">
+        <section className="border-t border-border pt-5" aria-labelledby="active-session">
           <h2 id="active-session" className="text-sm font-semibold text-foreground">
             你有尚未完成的學習
           </h2>
@@ -99,7 +99,7 @@ export default function ReviewPage() {
         </section>
       ) : null}
 
-      <section id="wrong" aria-labelledby="wrong-title" className="scroll-mt-4 rounded-2xl border border-border bg-surface p-4">
+      <section id="wrong" aria-labelledby="wrong-title" className="scroll-mt-4 border-t border-border pt-5">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-medium text-danger">針對弱點</p>
@@ -122,7 +122,7 @@ export default function ReviewPage() {
         </button>
       </section>
 
-      <section id="full" aria-labelledby="full-title" className="scroll-mt-4 rounded-2xl border border-border bg-surface p-4">
+      <section id="full" aria-labelledby="full-title" className="scroll-mt-4 border-t border-border pt-5">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-medium text-primary">不限到期日</p>

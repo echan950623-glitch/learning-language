@@ -12,5 +12,5 @@ function EnglishPracticeContent() {
 }
 
 export default function EnglishPracticePage() {
-  return <Suspense fallback={<main className="mx-auto w-[94%] max-w-xl py-6 text-foreground-muted">載入英文練習…</main>}><EnglishPracticeContent /></Suspense>;
+  return <Suspense fallback={<main className="mx-auto w-[88%] max-w-xl py-6 text-foreground-muted">載入英文練習…</main>}><EnglishPracticeContent /></Suspense>;
 }

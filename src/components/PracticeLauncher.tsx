@@ -134,7 +134,7 @@ export function PracticeStartButton({
       {data?.session && !compact ? (
         <Link
           href="/study"
-          className="block min-h-11 rounded-xl border border-primary px-3 py-2 text-center text-sm font-semibold text-primary"
+          className="flex min-h-12 items-center justify-center rounded-xl border border-foreground px-4 text-sm font-semibold text-foreground"
         >
           繼續上次練習
         </Link>
@@ -149,12 +149,14 @@ export function PracticeStartButton({
             count === 0 ||
             selected?.total === 0
           }
-          className="min-h-11 w-full rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-40"
+          className={compact
+            ? "min-h-11 w-full rounded-xl border border-foreground px-2 text-xs font-semibold text-foreground disabled:border-border disabled:text-foreground-muted"
+            : "min-h-12 w-full rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-40"}
         >
           {pending
-            ? "準備題目…"
+            ? compact ? "準備中…" : "準備題目…"
             : data?.session
-              ? "練習進行中"
+              ? compact ? "進行中" : "練習進行中"
               : compact && data && count === 0
                 ? "尚無內容"
                 : label}

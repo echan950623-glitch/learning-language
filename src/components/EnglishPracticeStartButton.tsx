@@ -37,9 +37,11 @@ export function EnglishPracticeStartButton({ selection, compact = false }: { sel
     }
   }
   return <div>
-    {data?.session && !compact ? <Link href="/study?language=en" className="block min-h-11 rounded-xl border border-primary px-3 py-2 text-center text-sm font-semibold text-primary">繼續上次英文練習</Link> :
-      <button type="button" onClick={start} disabled={!data || pending || !!data.session || !result?.units.length} className="min-h-11 w-full rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-40">
-        {pending ? "準備題目…" : data?.session ? "練習進行中" : data && !result?.units.length ? "尚無可練內容" : "開始練習"}
+    {data?.session && !compact ? <Link href="/study?language=en" className="flex min-h-12 items-center justify-center rounded-xl border border-foreground px-4 text-sm font-semibold text-foreground">繼續上次英文練習</Link> :
+      <button type="button" onClick={start} disabled={!data || pending || !!data.session || !result?.units.length} className={compact
+        ? "min-h-11 w-full rounded-xl border border-foreground px-2 text-xs font-semibold text-foreground disabled:border-border disabled:text-foreground-muted"
+        : "min-h-12 w-full rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-40"}>
+        {pending ? (compact ? "準備中…" : "準備題目…") : data?.session ? (compact ? "進行中" : "練習進行中") : data && !result?.units.length ? "尚無可練內容" : compact ? "練習" : "開始練習"}
       </button>}
     {loadError || error ? <p role="alert" className="mt-2 text-xs text-danger">{loadError || error}</p> : null}
   </div>;

@@ -57,7 +57,7 @@ export function AccountSyncPanel() {
   }
 
   return (
-    <section aria-labelledby="account-sync" className="rounded-2xl border border-border bg-surface p-4">
+    <section aria-labelledby="account-sync" className="border-t border-border pt-5">
       <h2 id="account-sync" className="text-sm font-medium text-foreground">帳戶與雲端同步</h2>
       {paused ? <p role="status" className="mt-3 text-xs text-warning">本機還原後同步已暫停，請在下方資料備份與還原區確認後恢復同步。</p> : null}
       {email ? (

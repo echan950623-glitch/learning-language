@@ -97,10 +97,10 @@ function JapaneseProgress() {
   const visibleItems = filteredItems.slice(0, visibleCount);
 
   return (
-    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
+    <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
       <header>
-        <h1 className="text-xl font-semibold text-foreground">日文進度</h1>
-        <Link href="/practice" className="mt-2 block min-h-11 text-sm text-primary underline">查看變化、文法與閱讀的分項進度</Link>
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">日文進度</h1>
+        <Link href="/practice" className="mt-2 block min-h-11 text-sm text-foreground-muted underline underline-offset-4">查看變化、文法與閱讀的分項進度</Link>
       </header>
 
       {!data ? (
@@ -110,7 +110,7 @@ function JapaneseProgress() {
         </div>
       ) : (
         <>
-          <details className="group rounded-2xl border border-border bg-surface p-4">
+          <details className="group border-t border-border py-2">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-foreground marker:content-none [&::-webkit-details-marker]:hidden">
               <span>項目狀態</span><span className="text-foreground-muted">{data.statusCounts.total} 項 <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span></span>
             </summary>
@@ -122,7 +122,7 @@ function JapaneseProgress() {
             </div>
           </details>
 
-          <details className="group rounded-2xl border border-border bg-surface p-4">
+          <details className="group -mt-5 border-t border-border py-2">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-foreground marker:content-none [&::-webkit-details-marker]:hidden">
               <span>分項能力狀態</span><span aria-hidden="true" className="text-foreground-muted transition-transform group-open:rotate-90">▸</span>
             </summary>
@@ -142,7 +142,7 @@ function JapaneseProgress() {
             ))}
           </details>
 
-          <details className="group rounded-2xl border border-border bg-surface p-4">
+          <details className="group -mt-5 border-t border-border py-2">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-foreground marker:content-none [&::-webkit-details-marker]:hidden">
               <span>近期表現</span><span aria-hidden="true" className="text-foreground-muted transition-transform group-open:rotate-90">▸</span>
             </summary>
@@ -156,9 +156,9 @@ function JapaneseProgress() {
             </div>
           </details>
 
-          <section aria-labelledby="vocabulary-heading" className="rounded-2xl border border-border bg-surface p-4">
+          <section aria-labelledby="vocabulary-heading" className="border-t border-border pt-8">
             <div className="flex items-baseline justify-between gap-3">
-              <h2 id="vocabulary-heading" className="text-base font-semibold text-foreground">我的單字庫</h2>
+              <h2 id="vocabulary-heading" className="eyebrow">我的單字庫</h2>
               <span className="text-xs tabular-nums text-foreground-muted">{filteredItems.length} / {data.items.length} 字</span>
             </div>
 
@@ -178,7 +178,7 @@ function JapaneseProgress() {
                   value={search}
                   onChange={(event) => { setSearch(event.target.value); setVisibleCount(PAGE_SIZE); }}
                   placeholder="搜尋日文、讀音或中文…"
-                  className="mt-4 min-h-11 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground"
+                  className="mt-4 min-h-12 w-full rounded-none border-0 border-b border-foreground bg-transparent px-0 py-2 text-base text-foreground placeholder:text-foreground-muted focus-visible:border-accent focus-visible:outline-none"
                 />
                 <div role="group" aria-label="單字狀態篩選" className="mt-3 flex flex-wrap gap-2">
                   {STATUS_FILTERS.map((filter) => (
@@ -197,13 +197,13 @@ function JapaneseProgress() {
                 {filteredItems.length === 0 ? (
                   <div className="mt-4"><EmptyState title="找不到符合條件的單字" description="試試其他關鍵字或狀態。" /></div>
                 ) : (
-                  <ul className="mt-4 flex flex-col gap-2">
+                  <ul className="mt-4 border-t border-border">
                     {visibleItems.map((item) => (
                       <li key={item.id}>
-                        <details className="group rounded-lg border border-border px-3 py-2">
+                        <details className="group border-b border-border py-3">
                           <summary className="flex min-h-11 cursor-pointer list-none flex-col justify-center marker:content-none [&::-webkit-details-marker]:hidden">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="min-w-0 break-words text-sm font-semibold text-foreground">{item.answer}{item.reading && item.reading !== item.answer ? <span className="ml-2 font-normal text-foreground-muted">{item.reading}</span> : null}</span>
+                              <span lang="ja" className="min-w-0 break-words font-display text-xl font-medium text-foreground">{item.answer}{item.reading && item.reading !== item.answer ? <span className="ml-3 font-sans text-sm font-normal text-foreground-muted">{item.reading}</span> : null}</span>
                               <span className="shrink-0 text-xs text-foreground-muted">{STATUS_LABELS[item.status]} <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span></span>
                             </div>
                             <p className="mt-0.5 text-xs text-foreground-muted">{item.promptZh}{item.reviewPaused ? " · 已暫停出題" : ""}</p>
