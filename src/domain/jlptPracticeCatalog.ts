@@ -2,9 +2,11 @@ import type { CatalogEntry } from "./japanesePracticeCatalog";
 import { JLPT_GRAMMAR_CATALOG } from "./jlptGrammarCatalog";
 import { JLPT_READING_CATALOG } from "./jlptReadingCatalog";
 import { jlptChoice, jlptPack } from "./jlptContentHelpers";
+import { parseJlptConceptKey, type JlptLevel } from "./jlptLevels";
+import { practiceInput } from "./learningPractice";
 
 /** Original preparation material; level assignments are editorial, not an official syllabus. */
-export type JlptLevel = "N5" | "N4";
+export type { JlptLevel } from "./jlptLevels";
 export const JLPT_SOURCES = {
   formats: "https://www.jlpt.jp/e/guideline/testsections.html",
   workbooks: "https://www.jlpt.jp/e/samples/sampleindex.html",
@@ -79,4 +81,11 @@ export function getJlptPracticeCatalog(): CatalogEntry[] {
 export function buildJlptPreviewBatches(level: JlptLevel, learnedConfirmed = false) {
   const entries = getJlptPracticeCatalog().filter(e => e.practice.conceptKey.startsWith(`jlpt:${level.toLowerCase()}:`));
   return Array.from({ length: Math.ceil(entries.length / 20) }, (_, i) => ({ items: entries.slice(i * 20, i * 20 + 20).map(e => ({ practice: structuredClone(e.practice), learnedConfirmed })) }));
+}
+
+/** What enabling a built-in concept adds to the account: the practice, switched on and marked as content the learner chose to study. */
+export function libraryEntryInput(entry: CatalogEntry) {
+  const level = parseJlptConceptKey(entry.practice.conceptKey)?.level;
+  const input = practiceInput({ ...structuredClone(entry.practice), learned: true, enabled: true });
+  return { ...input, tags: [...input.tags, ...(level ? [level] : [])] };
 }

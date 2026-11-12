@@ -16,7 +16,7 @@ export function ServiceWorkerRegister() {
       const anchor = event.target instanceof Element ? event.target.closest("a") : null;
       if (!anchor || anchor.download || (anchor.target && anchor.target !== "_self")) return;
       const url = new URL(anchor.href, window.location.href);
-      if (url.origin !== window.location.origin || !["/", "/study", "/review", "/progress", "/settings", "/practice"].includes(url.pathname)) return;
+      if (url.origin !== window.location.origin || !["/", "/study", "/review", "/library", "/progress", "/settings", "/practice"].includes(url.pathname)) return;
       if (url.pathname === window.location.pathname && url.search === window.location.search) return;
       event.preventDefault();
       window.location.assign(url.href);

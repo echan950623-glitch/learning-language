@@ -1,4 +1,6 @@
 "use client";
+import { matchesLevels } from "@/domain/jlptLevels";
+import { LevelFilterChips, useLevelFilter } from "@/components/LevelFilter";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
@@ -26,7 +28,9 @@ import {
 const selectedClass = "border-primary bg-primary text-primary-foreground",
   normalClass = "border-border bg-surface text-foreground";
 export default function PracticePage() {
-  const { data, error } = usePracticeData();
+  const { data: allData, error } = usePracticeData();
+  const levels = useLevelFilter();
+  const data = allData ? { ...allData, items: allData.items.filter(item => matchesLevels(item, levels)) } : allData;
   const [category, setCategory] = useState<PracticeCategory>("conjugation");
   const [concepts, setConcepts] = useState<string[]>([]);
   const [skill, setSkill] = useState<PracticeSkill>("mixed");
@@ -103,6 +107,10 @@ export default function PracticePage() {
       <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
         {PRACTICE_CATEGORIES.find((c) => c.id === category)?.label}
       </h1>
+      <div>
+        <p className="eyebrow mb-2">級別</p>
+        <LevelFilterChips />
+      </div>
       <label className="text-sm text-foreground">
         練習種類
         <select

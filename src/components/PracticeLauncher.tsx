@@ -1,4 +1,7 @@
 "use client";
+import { matchesLevels } from "@/domain/jlptLevels";
+import { readLevelFilter } from "@/lib/levelFilter";
+import { useLevelFilter } from "./LevelFilter";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -71,7 +74,10 @@ export function PracticeStartButton({
   label?: string;
   compact?: boolean;
 }) {
-  const { data, error: loadError } = usePracticeData();
+  const { data: allData, error: loadError } = usePracticeData();
+  const levels = useLevelFilter();
+  // Self-directed practice honours the chosen review levels; scheduled study elsewhere does not.
+  const data = allData ? { ...allData, items: allData.items.filter(item => matchesLevels(item, levels)) } : allData;
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
@@ -101,7 +107,7 @@ export function PracticeStartButton({
       await mutateRepository((r) => {
         if (r.getInProgressSession("ja")) return;
         const result = selectPracticeUnits(
-          r.listItems({ language: "ja" }),
+          r.listItems({ language: "ja" }).filter(item => matchesLevels(item, readLevelFilter())),
           r.listReviewAttempts({ language: "ja" }),
           r.listScheduleStates({ language: "ja" }),
           selection ?? {
