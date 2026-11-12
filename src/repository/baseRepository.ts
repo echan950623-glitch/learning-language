@@ -133,9 +133,10 @@ export abstract class BaseLearningRepository implements LearningRepository {
       exampleSentence: input.exampleSentence?.trim() || undefined,
       source: input.source,
       tags: trimmedTags,
-      status: "new",
+      status: input.introduceWithCard ? "learning" : "new",
       createdAt,
       isSeed: input.isSeed ?? false,
+      ...(input.introduceWithCard ? { introducedAt: createdAt, needsUnderstanding: true } : {}),
       contentVersion: 1,
       acceptedAnswers: input.acceptedAnswers?.map(answer => answer.trim()).filter(Boolean),
       answerFormat: input.answerFormat,
@@ -382,7 +383,8 @@ export abstract class BaseLearningRepository implements LearningRepository {
     if (!plan?.newItemIds.includes(learningItemId) && !(currentItem.needsUnderstanding && (currentItem.introducedAt || next.scheduleStates.some(schedule => schedule.learningItemId === learningItemId)))) throw new Error("這個新字尚未取得今日額度。");
     session.understoodItemIds = [...(session.understoodItemIds ?? []), learningItemId];
     const introductionCount = new Set(session.plannedUnits.filter(unit => unit.requiresIntroduction).map(unit => unit.learningItemId)).size;
-    if (!alreadyKnown && introductionCount < 4) {
+    // A concept card teaches a pattern that its questions apply to other sentences, so there is no answer to copy.
+    if (!alreadyKnown && introductionCount < 4 && !currentItem.practice) {
       for (const planned of session.plannedUnits.filter(unit => unit.learningItemId === learningItemId)) planned.recallNotBefore = new Date(now.getTime() + MIN_FRESH_RECALL_DELAY_MS).toISOString();
     }
     const item = next.items.find(candidate => candidate.id === learningItemId)!;

@@ -31,6 +31,8 @@ import {
   waitForRepositoryInitialization,
 } from "@/repository";
 import { EmptyState } from "@/components/EmptyState";
+import { ConceptCardContent } from "@/components/ConceptCardContent";
+import { conceptCardFor } from "@/domain/conceptCardLookup";
 import { Badge } from "@/components/Badge";
 import { abilityDisplayLabel, STUDY_MODE_LABELS } from "@/lib/labels";
 import {
@@ -881,16 +883,18 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     (introductionUnit
       ? itemsById.get(introductionUnit.learningItemId)
       : undefined);
+  const introductionConcept = introductionItem ? conceptCardFor(introductionItem) : undefined;
   if (introductionItem)
     return (
       <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
         <header>
-          <p className="eyebrow">理解卡</p>
+          <p className="eyebrow">{introductionConcept ? "概念卡" : "理解卡"}</p>
           <h1 className="mt-2 text-sm leading-6 text-foreground-muted">
-            先理解{introductionItem.practice ? "練習內容" : "新字"}：{language === "en" ? "看指定詞義與例句，再練習辨義。" : "看詞義、讀音和例句，接著做無提示回想。"}理解卡不計入答對率。
+            {introductionConcept ? "先看懂這組練習的重點，接著用不同的句子作答。概念卡不計入答對率。" : <>先理解新字：{language === "en" ? "看指定詞義與例句，再練習辨義。" : "看詞義、讀音和例句，接著做無提示回想。"}理解卡不計入答對率。</>}
           </h1>
         </header>
         <section className="flex flex-1 flex-col border-t border-border pt-8">
+          {introductionConcept ? <ConceptCardContent view={introductionConcept} /> : <>
           <p lang={language} className="break-words font-display text-5xl font-medium leading-tight text-foreground">
             {introductionItem.answer}
           </p>
@@ -917,6 +921,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
               {introductionItem.explanation}
             </p>
           ) : null}
+          </>}
           <div className="mt-auto flex flex-col gap-3 pt-10">
           <button
             type="button"
@@ -924,7 +929,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
             onClick={event => understandItem(introductionItem.id, event.timeStamp)}
             className="flex min-h-14 items-center justify-between rounded-xl bg-primary px-5 font-semibold text-primary-foreground disabled:opacity-50"
           >
-            <span>已理解，繼續</span><span aria-hidden="true">→</span>
+            <span>{introductionConcept ? "看懂了，開始作答" : "已理解，繼續"}</span><span aria-hidden="true">→</span>
           </button>
           <button
             type="button"
@@ -932,7 +937,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
             onClick={event => understandItem(introductionItem.id, event.timeStamp, true)}
             className="min-h-12 px-1 text-left text-sm text-foreground-muted underline underline-offset-4"
           >
-            這個已經會了（接著驗證回想）
+            {introductionConcept ? "這個我已經學過了" : "這個已經會了（接著驗證回想）"}
           </button>
           </div>
           {gradeError ? (

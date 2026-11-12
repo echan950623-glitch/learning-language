@@ -201,6 +201,11 @@ export interface NewLearningItemInput {
   reviewPaused?: boolean;
   practice?: import("./learningPractice").LearningPractice;
   coachReport?: import("./learningPractice").CoachReport;
+  /**
+   * Content the learner chose to start now (e.g. from the library): it counts as introduced on creation,
+   * so it needs no new-word reservation, and its concept card is shown before its first question.
+   */
+  introduceWithCard?: boolean;
   answerFormat?: "vocabulary" | "kanji";
   acceptedAnswers?: string[];
   language: Language;

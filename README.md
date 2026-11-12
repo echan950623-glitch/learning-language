@@ -18,7 +18,11 @@ Next.js 16 / React 19 / TypeScript 的日文與英文學習 App。使用本機�
 
 ## 題型架構與內容庫（2026-11-12）
 
-內建題目以 `jlpt:<級別>:<題型>:<概念>` 為 `conceptKey`（`src/domain/jlptLevels.ts`），級別 N5–N2、題型為文字語彙／文法／句子重組／讀解；不新增資料欄位，不需 migration。`/library` 內容庫依級別與題型列出內建練習，開啟後才加入帳戶。複習頁可複選級別，只影響自主複習與單項練習，首頁到期複習不分級別。單字的級別讀自 `tags`（如 `N4`），沒有標記的歸為未分級。概念卡、回報錯題與閱讀題組尚未實作。PWA shell v40。
+內建題目以 `jlpt:<級別>:<題型>:<概念>` 為 `conceptKey`（`src/domain/jlptLevels.ts`），級別 N5–N2、題型為文字語彙／文法／句子重組／讀解；不新增資料欄位，不需 migration。`/library` 內容庫依級別與題型列出內建練習，開啟後才加入帳戶。複習頁可複選級別，只影響自主複習與單項練習，首頁到期複習不分級別。單字的級別讀自 `tags`（如 `N4`），沒有標記的歸為未分級。PWA shell v40。
+
+## 概念卡（2026-11-12）
+
+從內容庫開啟的練習建立時即視為已引入並標記 `needsUnderstanding`（`introduceWithCard`），不佔新字額度；第一次出題前顯示概念卡（意思、接續、例句、容易混淆），看完後直接作答，不套用新字的三分鐘回想間隔，作答後進入固定複習時程。卡片內容放在程式內（`src/domain/jlptConceptCards.ts`，單字組由 `JLPT_WORDS` 產生），以 `conceptKey` 查詢，修正文字不需改寫已存資料。回報錯題與閱讀題組尚未實作。PWA shell v41。
 
 ## 雲端 workspace 開發
 
