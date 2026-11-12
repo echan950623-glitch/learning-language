@@ -24,6 +24,10 @@ Next.js 16 / React 19 / TypeScript 的日文與英文學習 App。使用本機�
 
 從內容庫開啟的練習建立時即視為已引入並標記 `needsUnderstanding`（`introduceWithCard`），不佔新字額度；第一次出題前顯示概念卡（意思、接續、例句、容易混淆），看完後直接作答，不套用新字的三分鐘回想間隔，作答後進入固定複習時程。卡片內容放在程式內（`src/domain/jlptConceptCards.ts`，單字組由 `JLPT_WORDS` 產生），以 `conceptKey` 查詢，修正文字不需改寫已存資料。回報錯題與閱讀題組尚未實作。PWA shell v41。
 
+## 打字層與題目回報（2026-11-12）
+
+文法概念除了選擇題（理解），另有同一個 `conceptKey` 的打字填空項目（`capability: "production"`，資料在 `src/domain/jlptProductionRows.ts`，由 `jlptProductionCatalog.ts` 組成條目）；作答與評分引擎不變，因為只有 `recognition` 會出選項。內容庫把兩者一起開啟，概念卡只由選擇題項目顯示一次，打字項目以 `introduced` 建立，並在選擇題的卡片看過之前不出題（`awaitingConceptCard`）。作答回饋畫面可按「這題有問題」：該題在這台裝置暫停出題（全部被回報時仍會出題），內容可在設定頁複製；回報存在帳戶本機值（`src/repository/questionReports.ts`），不同步到其他裝置，修正後換新的 variant id 即失效。PWA shell v42。
+
 ## 雲端 workspace 開發
 
 使用 Node.js 24 與 npm，從 `main` 開始：

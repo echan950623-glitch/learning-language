@@ -1,7 +1,7 @@
 import type { ReviewAttempt, AttemptResult, DailyPlan, LearningItem, ScheduleState, StudySessionPlannedUnit, Language } from "./types";
 import { computeNextSchedule } from "./srs";
 import { buildTodayQueue } from "./queue";
-import { isPracticeEligible } from "./learningPractice";
+import { awaitingConceptCard, isPracticeEligible } from "./learningPractice";
 import { FIXED_REVIEW_POLICY, FINAL_REVIEW_STAGE, fixedReviewInterval } from "./fixedReview";
 
 export const LEARNING_RULE_VERSION = 2 as const;
@@ -81,7 +81,7 @@ export function createDailyPlan(items: LearningItem[], schedules: ScheduleState[
   const queue = buildTodayQueue(items, schedules, now, items.length * 2, attempts, split);
   const reserved = new Set(existing?.newItemIds ?? []);
   const completed = new Set(existing?.completedUnitKeys ?? []);
-  const eligibleIds = new Set(items.filter(isPracticeEligible).map(item => item.id));
+  const eligibleIds = new Set(items.filter(item => isPracticeEligible(item) && !awaitingConceptCard(item, items)).map(item => item.id));
   const available = new Set(queue.units.map(u => `${u.item.id}:${u.ability}`));
   const units = new Map((existing?.units ?? []).filter(unit => eligibleIds.has(unit.learningItemId) && (completed.has(`${unit.learningItemId}:${unit.ability}`) || available.has(`${unit.learningItemId}:${unit.ability}`))).map(unit => [`${unit.learningItemId}:${unit.ability}`, structuredClone(unit)]));
   for (const item of items.filter(item => item.needsUnderstanding)) {
@@ -97,6 +97,7 @@ export function createDailyPlan(items: LearningItem[], schedules: ScheduleState[
   for (const unit of queue.units) {
     const key = `${unit.item.id}:${unit.ability}`;
     if (units.has(key) || completed.has(key)) continue;
+    if (awaitingConceptCard(unit.item, items)) continue;
     if (!split && units.size >= (busy ? BUSY_DAILY_UNIT_BUDGET : NORMAL_DAILY_UNIT_BUDGET)) break;
     const fresh = !unit.item.introducedAt && !schedules.some(s => s.learningItemId === unit.item.id) && (!split || !unit.item.practice);
     if (fresh && !reserved.has(unit.item.id)) {

@@ -32,6 +32,7 @@ import {
 } from "@/repository";
 import { EmptyState } from "@/components/EmptyState";
 import { ConceptCardContent } from "@/components/ConceptCardContent";
+import { ReportQuestion } from "@/components/ReportQuestion";
 import { conceptCardFor } from "@/domain/conceptCardLookup";
 import { Badge } from "@/components/Badge";
 import { abilityDisplayLabel, STUDY_MODE_LABELS } from "@/lib/labels";
@@ -1251,6 +1252,8 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
                 {correctionError}
               </p>
             ) : null}
+
+            {item.practice ? <ReportQuestion key={currentExercise.id} item={item} /> : null}
 
             {!gradedResult.correct && language !== "en" ? (
               <button

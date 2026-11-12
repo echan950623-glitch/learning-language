@@ -1,6 +1,6 @@
 import { buildQuickQuizUnits, buildWrongAnswerUnits } from "./practice";
 import { effectiveSchedules, verificationState, limitVerificationUnits } from "./automaticVerification";
-import { isPracticeEligible } from "./learningPractice";
+import { awaitingConceptCard, isPracticeEligible } from "./learningPractice";
 import type {
   LearningItem,
   ReviewAttempt,
@@ -81,6 +81,7 @@ export function selectPracticeUnits(
     selection.category,
   ).filter(
     (i) =>
+      !awaitingConceptCard(i, items) &&
       (!selection.concepts.length ||
         (!!i.practice && selection.concepts.includes(i.practice.conceptKey))) &&
       (selection.skill === "mixed" ||

@@ -1,4 +1,5 @@
 import type { CatalogEntry } from "./japanesePracticeCatalog";
+import { productionEntries } from "./jlptProductionCatalog";
 import { JLPT_GRAMMAR_CATALOG } from "./jlptGrammarCatalog";
 import { JLPT_READING_CATALOG } from "./jlptReadingCatalog";
 import { jlptChoice, jlptPack } from "./jlptContentHelpers";
@@ -73,7 +74,8 @@ function vocabularyCatalog(): CatalogEntry[] {
 }
 
 export function getJlptPracticeCatalog(): CatalogEntry[] {
-  return [...vocabularyCatalog(), ...JLPT_GRAMMAR_CATALOG, ...JLPT_READING_CATALOG];
+  const recognition = [...vocabularyCatalog(), ...JLPT_GRAMMAR_CATALOG, ...JLPT_READING_CATALOG];
+  return [...recognition, ...productionEntries(recognition)];
 }
 
 // The existing MCP accepts at most 20 concepts per batch. These are preview payloads,
@@ -87,5 +89,7 @@ export function buildJlptPreviewBatches(level: JlptLevel, learnedConfirmed = fal
 export function libraryEntryInput(entry: CatalogEntry) {
   const level = parseJlptConceptKey(entry.practice.conceptKey)?.level;
   const input = practiceInput({ ...structuredClone(entry.practice), learned: true, enabled: true });
-  return { ...input, tags: [...input.tags, ...(level ? [level] : [])], introduceWithCard: true };
+  const tags = [...input.tags, ...(level ? [level] : [])];
+  // The multiple-choice entry teaches the concept; its typed sibling follows without a second card.
+  return entry.practice.capability === "recognition" ? { ...input, tags, introduceWithCard: true } : { ...input, tags, introduced: true };
 }

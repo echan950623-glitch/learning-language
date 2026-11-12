@@ -67,32 +67,38 @@ export default function LibraryPage() {
       {entries.length === 0 ? (
         <p className="border-y border-border py-10 text-center text-sm text-foreground-muted">{level} 的內容還在準備中。</p>
       ) : TYPES.map(type => {
-        const group = entries.filter(entry => parseJlptConceptKey(entry.practice.conceptKey)?.type === type);
-        if (!group.length) return null;
-        const remaining = group.filter(entry => !added.has(conceptId(entry.practice)));
+        const concepts = [...new Set(entries.filter(entry => parseJlptConceptKey(entry.practice.conceptKey)?.type === type).map(entry => entry.practice.conceptKey))]
+          .map(conceptKey => entries.filter(entry => entry.practice.conceptKey === conceptKey));
+        if (!concepts.length) return null;
+        const missingOf = (group: CatalogEntry[]) => group.filter(entry => !added.has(conceptId(entry.practice)));
+        const remaining = concepts.filter(group => missingOf(group).length === group.length);
         return (
           <section key={type} aria-labelledby={`library-${type}`}>
             <div className="flex items-end justify-between gap-3">
-              <h2 id={`library-${type}`} className="eyebrow">{JLPT_QUESTION_TYPES[type]} · 已開啟 {group.length - remaining.length} / {group.length}</h2>
+              <h2 id={`library-${type}`} className="eyebrow">{JLPT_QUESTION_TYPES[type]} · 已開啟 {concepts.filter(group => missingOf(group).length === 0).length} / {concepts.length}</h2>
               {remaining.length > 1 ? (
-                <button type="button" disabled={!data || pending !== null} onClick={() => add(remaining, type)} className="min-h-10 text-xs text-foreground-muted underline underline-offset-4 disabled:opacity-50">
+                <button type="button" disabled={!data || pending !== null} onClick={() => add(remaining.flat(), type)} className="min-h-10 text-xs text-foreground-muted underline underline-offset-4 disabled:opacity-50">
                   {pending === type ? "加入中…" : `全部開啟（${remaining.length}）`}
                 </button>
               ) : null}
             </div>
             <ul className="mt-3 border-t border-border">
-              {group.map(entry => {
-                const isAdded = added.has(conceptId(entry.practice));
+              {concepts.map(group => {
+                const choice = group.find(entry => entry.practice.capability === "recognition") ?? group[0];
+                const typed = group.find(entry => entry.practice.capability === "production");
+                const missing = missingOf(group);
+                const key = choice.practice.conceptKey;
+                const typedOnly = missing.length > 0 && missing.length < group.length;
                 return (
-                  <li key={entry.id} className="flex items-center gap-3 border-b border-border py-3">
+                  <li key={key} className="flex items-center gap-3 border-b border-border py-3">
                     <div className="min-w-0 flex-1">
-                      <h3 lang="ja" className="break-words font-medium text-foreground">{entry.title.replace(/^N\d｜/, "").replace(/^文字語彙：/, "")}</h3>
-                      <p className="mt-0.5 text-xs text-foreground-muted">{entry.practice.variants.length} 題</p>
+                      <h3 lang="ja" className="break-words font-medium text-foreground">{choice.title.replace(/^N\d｜/, "").replace(/^文字語彙：/, "")}</h3>
+                      <p className="mt-0.5 text-xs text-foreground-muted">{choice.practice.variants.length} 題選擇{typed ? `＋${typed.practice.variants.length} 題打字` : ""}</p>
                     </div>
-                    {isAdded ? <span className="shrink-0 text-xs text-foreground-muted">已開啟</span> : (
-                      <button type="button" disabled={!data || pending !== null} onClick={() => add([entry], entry.id)}
-                        className="min-h-11 w-20 shrink-0 rounded-xl border border-foreground px-2 text-xs font-semibold text-foreground disabled:border-border disabled:text-foreground-muted">
-                        {pending === entry.id ? "加入中…" : "開啟"}
+                    {missing.length === 0 ? <span className="shrink-0 text-xs text-foreground-muted">已開啟</span> : (
+                      <button type="button" disabled={!data || pending !== null} onClick={() => add(missing, key)}
+                        className="min-h-11 w-24 shrink-0 rounded-xl border border-foreground px-2 text-xs font-semibold text-foreground disabled:border-border disabled:text-foreground-muted">
+                        {pending === key ? "加入中…" : typedOnly ? "補上打字題" : "開啟"}
                       </button>
                     )}
                   </li>
