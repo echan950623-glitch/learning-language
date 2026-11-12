@@ -87,5 +87,5 @@ export function buildJlptPreviewBatches(level: JlptLevel, learnedConfirmed = fal
 export function libraryEntryInput(entry: CatalogEntry) {
   const level = parseJlptConceptKey(entry.practice.conceptKey)?.level;
   const input = practiceInput({ ...structuredClone(entry.practice), learned: true, enabled: true });
-  return { ...input, tags: [...input.tags, ...(level ? [level] : [])] };
+  return { ...input, tags: [...input.tags, ...(level ? [level] : [])], introduceWithCard: true };
 }

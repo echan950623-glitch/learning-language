@@ -122,6 +122,12 @@ export function selectPracticeUnits(
         (due.has(key(b)) ? 0 : wrong.has(key(b)) ? 1 : 2),
     );
   }
+  // A concept that still needs understanding opens with its card, whichever way the round was started.
+  const byId = new Map(candidates.map(item => [item.id, item]));
+  units = units.map(unit => {
+    const item = byId.get(unit.learningItemId);
+    return item?.needsUnderstanding ? { ...unit, requiresIntroduction: true, itemVersion: item.contentVersion ?? 1 } : unit;
+  });
   const total = units.length;
   if (selection.source === "recommended" || selection.source === "due") {
     units = limitVerificationUnits(units, candidates, schedules, attempts, selection.questionCount);

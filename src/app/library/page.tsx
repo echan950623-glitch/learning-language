@@ -46,7 +46,7 @@ export default function LibraryPage() {
         <p className="eyebrow">Library</p>
         <h1 className="mt-2 font-display text-4xl font-medium tracking-tight text-foreground">內容庫</h1>
         <p className="mt-3 text-sm leading-6 text-foreground-muted">
-          內建的原創練習，依級別與題型整理。開啟後才會出現在複習裡；級別是本 App 的教學安排，不是官方考綱。
+          內建的原創練習，依級別與題型整理。開啟後，第一次出題前會先看概念卡，之後照複習時程出現。級別是本 App 的教學安排，不是官方考綱。
         </p>
       </header>
 
