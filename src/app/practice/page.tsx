@@ -97,8 +97,8 @@ export default function PracticePage() {
     : 0;
   return (
     <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
-      <Link href="/" className="min-h-11 py-2 text-sm text-primary">
-        ‹ 首頁
+      <Link href="/review" className="min-h-11 py-2 text-sm text-foreground-muted">
+        ‹ 複習
       </Link>
       <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
         {PRACTICE_CATEGORIES.find((c) => c.id === category)?.label}

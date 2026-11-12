@@ -1,7 +1,33 @@
 @import "tailwindcss";
 
 :root {
-  /* Ink on paper: one neutral ramp, with vermilion reserved for the few things that need attention. */
+  /* Ink on paper, dark first: one neutral ramp, with vermilion reserved for the few things that need attention. */
+  color-scheme: dark;
+  --background: #100f0d;
+  --surface: #161513;
+  --surface-muted: #23211d;
+  --foreground: #efede6;
+  --foreground-muted: #a09b8e;
+  --border: #2e2c26;
+  --primary: #efede6;
+  --primary-foreground: #100f0d;
+  --accent: #f0764f;
+  --success: #6fcf98;
+  --success-bg: #15281c;
+  --warning: #e0a458;
+  --warning-bg: #2e220e;
+  --danger: #f2938c;
+  --danger-bg: #331815;
+  --practice-recall: #efede6;
+  --practice-recall-bg: #23211d;
+  --practice-reading: #f0764f;
+  --practice-reading-bg: #36190f;
+  --practice-button-foreground: #100f0d;
+}
+
+/* The light variant is opt-in from the settings page. */
+:root[data-theme="light"] {
+  color-scheme: light;
   --background: #f6f5f1;
   --surface: #fbfaf7;
   --surface-muted: #eceae3;
@@ -53,31 +79,6 @@
   --radius-lg: 0.375rem;
   --radius-xl: 0.5rem;
   --radius-2xl: 0.625rem;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #100f0d;
-    --surface: #161513;
-    --surface-muted: #23211d;
-    --foreground: #efede6;
-    --foreground-muted: #a09b8e;
-    --border: #2e2c26;
-    --primary: #efede6;
-    --primary-foreground: #100f0d;
-    --accent: #f0764f;
-    --success: #6fcf98;
-    --success-bg: #15281c;
-    --warning: #e0a458;
-    --warning-bg: #2e220e;
-    --danger: #f2938c;
-    --danger-bg: #331815;
-    --practice-recall: #efede6;
-    --practice-recall-bg: #23211d;
-    --practice-reading: #f0764f;
-    --practice-reading-bg: #36190f;
-    --practice-button-foreground: #100f0d;
-  }
 }
 
 * {

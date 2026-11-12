@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { BottomNav } from "@/components/BottomNav";
+import { ThemePreference } from "@/components/ThemePreference";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { DurabilityBanner } from "@/components/DurabilityBanner";
 import { AuthSyncBootstrapper } from "@/components/AuthSyncBootstrapper";
@@ -16,13 +17,14 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: [{ media: "(prefers-color-scheme: light)", color: "#f6f5f1" }, { media: "(prefers-color-scheme: dark)", color: "#100f0d" }],
+  themeColor: "#100f0d",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-TW" className="h-full antialiased">
       <body className="flex min-h-full flex-col bg-background text-foreground">
+        <ThemePreference />
         <ServiceWorkerRegister />
         <AuthSyncBootstrapper />
         <DurabilityBanner />

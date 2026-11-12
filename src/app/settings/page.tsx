@@ -15,6 +15,7 @@ import {
   type StudyQuestionCount,
 } from "@/lib/studyPreferences";
 import { NEW_WORD_BATCH_SIZE } from "@/domain/dailyStudyAreas";
+import { readTheme, saveTheme, type ThemeChoice } from "@/lib/themePreference";
 import { withDataLock, subscribeDataChanged } from "@/repository/accountStorage";
 import { MigrationPanel } from "@/components/MigrationPanel";
 import { DataSafetyPanel } from "@/components/DataSafetyPanel";
@@ -27,11 +28,13 @@ export default function SettingsPage() {
   const [newItemCap, setNewItemCap] = useState<DailyNewItemCap>(DEFAULT_DAILY_NEW_ITEM_CAP);
   const [capMessage, setCapMessage] = useState<string | null>(null);
   const [capError, setCapError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<ThemeChoice>("dark");
 
   useEffect(() => {
     const refresh = () => {
     setSelected(readStudyQuestionCount());
     setNewItemCap(readDailyNewItemCap());
+    setTheme(readTheme());
     };
     refresh();
     return subscribeDataChanged(refresh);
@@ -139,6 +142,28 @@ export default function SettingsPage() {
         <p className="mt-2 text-sm leading-6 text-foreground-muted">複習專區列出所有到期與待補強內容，不限題數；可中途離開，之後繼續。</p>
         <p className="mt-2 text-sm leading-6 text-foreground-muted">新字隔天確認，之後依上次通過時間間隔 3、5、7、14 天複習。無提示首答正確才前進；提示後答對保留階段，答錯重設，兩者都隔天再確認。熟練後退出日常出題。</p>
         <p className="mt-2 text-xs text-foreground-muted">學習時區為 Asia/Taipei，每日 00:00 換日；進行中的題目維持原計畫。</p>
+      </section>
+      <section aria-labelledby="appearance" className="border-t border-border pt-5">
+        <h2 id="appearance" className="text-sm font-medium text-foreground">外觀</h2>
+        <p className="mt-1 text-xs leading-5 text-foreground-muted">預設為深色；這個選擇只保存在這台裝置。</p>
+        <div className="mt-4 grid grid-cols-2 gap-3" role="radiogroup" aria-labelledby="appearance">
+          {([{ id: "dark", label: "深色" }, { id: "light", label: "淺色" }] as const).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={theme === option.id}
+              onClick={() => { saveTheme(option.id); setTheme(option.id); }}
+              className={`min-h-12 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
+                theme === option.id
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-surface text-foreground hover:bg-surface-muted"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       </section>
     </main>
   );

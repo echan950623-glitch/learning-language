@@ -137,3 +137,35 @@ export function selectPracticeUnits(
           : "random",
   };
 }
+
+/**
+ * One round across every kind of learned content. Each category contributes what is due or still wrong
+ * first, then anything else already learned, and the categories take turns so the round stays mixed
+ * instead of being filled by whichever category happens to hold the most items.
+ */
+export function selectMixedReviewUnits(
+  items: LearningItem[],
+  attempts: ReviewAttempt[],
+  schedules: ScheduleState[],
+  questionCount: number,
+  now: Date,
+  random: () => number = Math.random,
+): { units: StudySessionPlannedUnit[]; total: number; byCategory: Record<PracticeCategory, number> } {
+  const key = (u: StudySessionPlannedUnit) => `${u.learningItemId}:${u.ability}`;
+  const byCategory = {} as Record<PracticeCategory, number>;
+  const queues = PRACTICE_CATEGORIES.map(({ id }) => {
+    const select = (source: PracticeSource) => selectPracticeUnits(items, attempts, schedules,
+      { category: id, source, skill: "mixed", concepts: [], questionCount: Number.MAX_SAFE_INTEGER }, now, random).units;
+    const urgent = select("recommended");
+    const seen = new Set(urgent.map(key));
+    const queue = [...urgent, ...select("all").filter(u => !seen.has(key(u)))];
+    byCategory[id] = queue.length;
+    return queue;
+  });
+  const limit = Math.max(0, Math.floor(questionCount));
+  const units: StudySessionPlannedUnit[] = [];
+  for (let round = 0; units.length < limit && queues.some(queue => round < queue.length); round++) {
+    for (const queue of queues) if (round < queue.length && units.length < limit) units.push(queue[round]);
+  }
+  return { units, total: queues.reduce((sum, queue) => sum + queue.length, 0), byCategory };
+}
