@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseJlptConceptKey } from "./jlptLevels";
 import { getJapanesePracticeCatalog } from "./japanesePracticeCatalog";
 import { buildJlptPreviewBatches, getJlptPracticeCatalog } from "./jlptPracticeCatalog";
 import { freezePracticeQuestion, isLearningPractice, practiceInput } from "./learningPractice";
@@ -18,10 +19,11 @@ describe("JLPT original content in the existing study loop", () => {
       const entries = catalog.filter(e => e.practice.conceptKey.startsWith(`jlpt:${level}:`));
       expect(entries.length).toBeGreaterThan(20);
       for (const key of ["sentence-composition", "text-grammar", "reading-short", "reading-medium", "reading-information", "context-vocabulary", "paraphrase"])
-        expect(entries.some(e => e.practice.conceptKey === `jlpt:${level}:${key}`)).toBe(true);
+        expect(entries.some(e => parseJlptConceptKey(e.practice.conceptKey)?.concept === key)).toBe(true);
     }
     for (const entry of catalog) {
       expect(isLearningPractice(entry.practice), entry.id).toBe(true);
+      expect(parseJlptConceptKey(entry.practice.conceptKey), entry.id).toBeDefined();
       expect(entry.practice.learned).toBe(false);
       expect(entry.practice.enabled).toBe(false);
       expect(entry.practice.capability).toBe("recognition");

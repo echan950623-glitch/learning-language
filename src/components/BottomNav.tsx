@@ -17,7 +17,7 @@ export function BottomNav() { return <Suspense fallback={null}><BottomNavigation
 function BottomNavigation() {
   const pathname = usePathname();
   // Area practice and the word library are reached from the review hub, so they keep its tab lit.
-  const section = ["/practice", "/progress"].some(prefix => pathname.startsWith(prefix)) ? "/review" : pathname;
+  const section = ["/practice", "/progress", "/library"].some(prefix => pathname.startsWith(prefix)) ? "/review" : pathname;
 
   return (
     <nav

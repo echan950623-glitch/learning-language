@@ -1,9 +1,11 @@
 import type { CatalogEntry } from "./japanesePracticeCatalog";
 import type { LearningPractice, PracticeVariant } from "./learningPractice";
-import type { JlptLevel } from "./jlptPracticeCatalog";
+import type { JlptLevel, JlptQuestionType } from "./jlptLevels";
+
+const TYPE_BY_KIND: Record<LearningPractice["kind"], JlptQuestionType> = { collocation: "goi", conjugation: "bunpou", grammar: "bunpou", particle: "bunpou", structure: "narabekae", reading: "dokkai" };
 
 export function jlptPack(level: JlptLevel, key: string, title: string, kind: LearningPractice["kind"], variants: PracticeVariant[], description: string): CatalogEntry {
-  const conceptKey = `jlpt:${level.toLowerCase()}:${key}`;
+  const conceptKey = `jlpt:${level.toLowerCase()}:${TYPE_BY_KIND[kind]}:${key}`;
   // Exam-style choices measure recognition, including vocabulary usage questions.
   const capability = "recognition";
   const label = `${level}｜${title}`;

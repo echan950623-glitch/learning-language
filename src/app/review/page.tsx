@@ -6,7 +6,10 @@ import { useEffect, useState } from "react";
 
 import { buildWrongAnswerUnits } from "@/domain/practice";
 import { PRACTICE_CATEGORIES, selectMixedReviewUnits, type PracticeCategory } from "@/domain/practiceSelection";
+import { matchesLevels } from "@/domain/jlptLevels";
 import type { StudySessionPlannedUnit } from "@/domain/types";
+import { LevelFilterChips, useLevelFilter } from "@/components/LevelFilter";
+import { readLevelFilter } from "@/lib/levelFilter";
 import { readStudyQuestionCount } from "@/lib/studyPreferences";
 import { describePersistenceError, getRepository, mutateRepository, subscribeDataChanged } from "@/repository";
 
@@ -26,11 +29,12 @@ export default function ReviewPage() {
   const [data, setData] = useState<ReviewData | null>(null);
   const [startingMode, setStartingMode] = useState<ReviewMode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const levels = useLevelFilter();
 
   useEffect(() => {
     const refresh = () => {
       const repository = getRepository();
-      const items = repository.listItems({ language: "ja" });
+      const items = repository.listItems({ language: "ja" }).filter(item => matchesLevels(item, levels));
       const attempts = repository.listReviewAttempts({ language: "ja" });
       const questionCount = readStudyQuestionCount();
       const mixed = selectMixedReviewUnits(items, attempts, repository.listScheduleStates({ language: "ja" }), questionCount, new Date());
@@ -44,7 +48,7 @@ export default function ReviewPage() {
     };
     refresh();
     return subscribeDataChanged(refresh);
-  }, []);
+  }, [levels]);
 
   async function startReview(mode: ReviewMode) {
     if (!data || data.hasInProgressSession || startingMode) return;
@@ -53,7 +57,7 @@ export default function ReviewPage() {
     try {
       await mutateRepository(repository => {
         if (repository.getInProgressSession("ja")) return;
-        const items = repository.listItems({ language: "ja" });
+        const items = repository.listItems({ language: "ja" }).filter(item => matchesLevels(item, readLevelFilter()));
         const attempts = repository.listReviewAttempts({ language: "ja" });
         const now = new Date();
         // Pick the questions inside the write so the round reflects the data it is saved against.
@@ -108,6 +112,14 @@ export default function ReviewPage() {
         </section>
       ) : null}
 
+      <section aria-labelledby="review-levels">
+        <h2 id="review-levels" className="eyebrow">級別</h2>
+        <div className="mt-3"><LevelFilterChips /></div>
+        <p className="mt-3 text-xs leading-5 text-foreground-muted">
+          {levels.length ? "只套用在這一頁的複習與單項練習。首頁的到期複習不分級別，照常出現。" : "目前複習所有級別。可複選想複習的程度。"}
+        </p>
+      </section>
+
       <section aria-labelledby="review-rounds">
         <h2 id="review-rounds" className="eyebrow">開始一輪</h2>
         <div className="mt-3 border-t border-border">
@@ -158,13 +170,18 @@ export default function ReviewPage() {
           })}
         </ul>
         <p className="mt-4 text-xs leading-5 text-foreground-muted">
-          尚無內容的類別，請告訴 GPT 你想練什麼。自主複習不會反覆延長排程間隔。
+          尚無內容的類別，可到下方的內容庫開啟。自主複習不會反覆延長排程間隔。
         </p>
       </section>
 
-      <Link href="/progress" className="flex min-h-12 items-center justify-between border-y border-border text-sm text-foreground">
-        <span>單字庫與學習紀錄</span><span aria-hidden="true">→</span>
-      </Link>
+      <nav aria-label="更多" className="border-t border-border">
+        <Link href="/library" className="flex min-h-14 items-center justify-between gap-3 border-b border-border py-3 text-sm text-foreground">
+          <span><span className="block font-medium">內容庫</span><span className="mt-0.5 block text-xs text-foreground-muted">依級別開啟文法、句構與讀解練習</span></span><span aria-hidden="true" className="text-foreground-muted">→</span>
+        </Link>
+        <Link href="/progress" className="flex min-h-14 items-center justify-between gap-3 border-b border-border py-3 text-sm text-foreground">
+          <span className="font-medium">單字庫與學習紀錄</span><span aria-hidden="true" className="text-foreground-muted">→</span>
+        </Link>
+      </nav>
     </main>
   );
 }
