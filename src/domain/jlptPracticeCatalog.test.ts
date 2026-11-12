@@ -26,14 +26,15 @@ describe("JLPT original content in the existing study loop", () => {
       expect(parseJlptConceptKey(entry.practice.conceptKey), entry.id).toBeDefined();
       expect(entry.practice.learned).toBe(false);
       expect(entry.practice.enabled).toBe(false);
-      expect(entry.practice.capability).toBe("recognition");
+      expect(entry.id).toBe(`${entry.practice.conceptKey}:${entry.practice.capability}`);
+      expect(["recognition", "production"]).toContain(entry.practice.capability);
       expect(entry.practice.variants.length).toBeGreaterThanOrEqual(3);
       expect(full.some(e => e.id === entry.id)).toBe(true);
     }
   });
 
   it("uses the authored four options, grades both text and original numbers, rejects every distractor", () => {
-    for (const entry of getJlptPracticeCatalog()) {
+    for (const entry of getJlptPracticeCatalog().filter(candidate => candidate.practice.capability === "recognition")) {
       for (const variant of entry.practice.variants) {
         const item: LearningItem = { ...practiceInput({ ...structuredClone(entry.practice), activeVariantId: variant.id }), id: entry.id, status: "new", isSeed: false, createdAt: "2026-10-10T00:00:00Z" };
         const frozen = freezePracticeQuestion(item, []);

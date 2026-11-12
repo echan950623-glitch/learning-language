@@ -62,6 +62,15 @@ export function isCoachReport(value: unknown): value is CoachReport {
 export function isPracticeEligible(item: LearningItem): boolean {
   return !item.reviewPaused && !item.archivedAt && !item.coachReport && (item.language !== "en" || !!item.englishPractice) && (!item.practice || item.practice.learned && item.practice.enabled);
 }
+/**
+ * A concept's typed layer waits until its multiple-choice sibling has shown the concept card, so the
+ * first question the learner meets is never asked before the concept is taught.
+ */
+export function awaitingConceptCard(item: LearningItem, items: LearningItem[]): boolean {
+  const practice = item.practice;
+  if (!practice || practice.capability === "recognition" || item.needsUnderstanding) return false;
+  return items.some(other => other.id !== item.id && !other.archivedAt && other.needsUnderstanding && other.practice?.conceptKey === practice.conceptKey);
+}
 export function practiceExposureKey(item: LearningItem): string {
   return item.practice?.conceptKey ?? `word:${item.id}`;
 }
@@ -103,12 +112,14 @@ export function hasMixedVocabularyTasks(item: LearningItem): boolean {
   return ["reading", "orthography", "meaning"].every(id => ids.has(id));
 }
 /** Rotate from recorded questions, independent of random UI rerenders. */
-export function freezePracticeQuestion(item: LearningItem, attempts: ReviewAttempt[], exposedContent = new Set<string>(), verifying = false, seenQuestions: LearningItem[] = []): LearningItem {
+export function freezePracticeQuestion(item: LearningItem, attempts: ReviewAttempt[], exposedContent = new Set<string>(), verifying = false, seenQuestions: LearningItem[] = [], excludedQuestions: ReadonlySet<string> = new Set()): LearningItem {
   if (!item.practice) return structuredClone(item);
   const relevant = attempts.filter(a => a.learningItemId === item.id && a.abilityEvidence?.question.practice && (a.abilityEvidence?.attemptNumber ?? 0) === 0)
     .sort((a, b) => a.reviewedAt.localeCompare(b.reviewedAt) || a.id.localeCompare(b.id));
   // Keep one parallel question out of ordinary practice until a delayed check.
-  const allVariants = item.practice.variants;
+  // Questions the learner flagged stay out of rotation; if that would leave nothing, the concept still has to be asked.
+  const unflagged = item.practice.variants.filter(v => !excludedQuestions.has(`${item.practice!.conceptKey}#${v.id}`));
+  const allVariants = unflagged.length ? unflagged : item.practice.variants;
   const variants = !verifying && allVariants.length >= 3 && !hasMixedVocabularyTasks(item) ? allVariants.slice(0, -1) : allVariants;
   const lastId = relevant.at(-1)?.abilityEvidence?.question.practice?.activeVariantId;
   const last = variants.findIndex(v => v.id === lastId);

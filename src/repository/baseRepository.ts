@@ -28,6 +28,7 @@ import { isDailyPlan, type PersistedStore } from "./schema";
 import { PersistenceFailedError } from "./errors";
 import { enqueueRetry, evidenceStatus, learningDay, scheduleEvidence, DEFAULT_LEARNING_TIME_ZONE, MIN_FRESH_RECALL_DELAY_MS } from "../domain/learningRules";
 import { accountStorage } from "./accountStorage";
+import { reportedQuestionKeys } from "./questionReports";
 import { verificationState } from "../domain/automaticVerification";
 import { activeEnglishVariant, englishModeVerified, englishStatus, isEnglishPractice, freezeEnglishQuestion } from "../domain/englishPractice";
 import { freezeVocabularyVerification, vocabularyVerificationQuestions } from "../domain/verificationContexts";
@@ -133,10 +134,11 @@ export abstract class BaseLearningRepository implements LearningRepository {
       exampleSentence: input.exampleSentence?.trim() || undefined,
       source: input.source,
       tags: trimmedTags,
-      status: input.introduceWithCard ? "learning" : "new",
+      status: input.introduceWithCard || input.introduced ? "learning" : "new",
       createdAt,
       isSeed: input.isSeed ?? false,
-      ...(input.introduceWithCard ? { introducedAt: createdAt, needsUnderstanding: true } : {}),
+      ...(input.introduceWithCard || input.introduced ? { introducedAt: createdAt } : {}),
+      ...(input.introduceWithCard ? { needsUnderstanding: true } : {}),
       contentVersion: 1,
       acceptedAnswers: input.acceptedAnswers?.map(answer => answer.trim()).filter(Boolean),
       answerFormat: input.answerFormat,
@@ -318,6 +320,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
       accountStorage().setItem("learning-language:device-id", deviceId);
     }
     const exposedContent = new Set<string>();
+    const excludedQuestions = options ? reportedQuestionKeys() : new Set<string>();
     const seenQuestions = [...this.store.reviewAttempts.map(a => a.abilityEvidence?.question), ...this.store.studySessions.flatMap(s => s.plannedUnits.map(u => u.itemSnapshot))].filter((q): q is LearningItem => !!q);
     const frozenUnits = plannedUnits.map(u => {
       if (!options) return { ...u };
@@ -325,7 +328,7 @@ export abstract class BaseLearningRepository implements LearningRepository {
       const position = this.store.scheduleStates.find(s => s.learningItemId === item.id && s.ability === u.ability);
       const verifying = verificationState(item, u.ability, this.store.scheduleStates, this.store.reviewAttempts).stage !== "learning" ||
         (position?.reviewPolicy === 1 && (position.reviewStage ?? 0) >= 4);
-      let itemSnapshot = item.englishPractice ? freezeEnglishQuestion(item, this.store.reviewAttempts, this.store.studySessions, verifying) : freezePracticeQuestion(item, this.store.reviewAttempts, exposedContent, verifying, seenQuestions);
+      let itemSnapshot = item.englishPractice ? freezeEnglishQuestion(item, this.store.reviewAttempts, this.store.studySessions, verifying) : freezePracticeQuestion(item, this.store.reviewAttempts, exposedContent, verifying, seenQuestions, excludedQuestions);
       if (verifying && !item.practice && !item.englishPractice) {
         const seenKeys = new Set(seenQuestions.map(q => q.verificationQuestion?.key).filter((k): k is string => !!k));
         for (const candidate of vocabularyVerificationQuestions(item, u.ability)) {

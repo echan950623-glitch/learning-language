@@ -20,6 +20,7 @@ import { withDataLock, subscribeDataChanged } from "@/repository/accountStorage"
 import { MigrationPanel } from "@/components/MigrationPanel";
 import { DataSafetyPanel } from "@/components/DataSafetyPanel";
 import { AccountSyncPanel } from "@/components/AccountSyncPanel";
+import { QuestionReportsPanel } from "@/components/QuestionReportsPanel";
 
 export default function SettingsPage() {
   const [selected, setSelected] = useState<StudyQuestionCount>(DEFAULT_STUDY_QUESTION_COUNT);
@@ -143,6 +144,8 @@ export default function SettingsPage() {
         <p className="mt-2 text-sm leading-6 text-foreground-muted">新字隔天確認，之後依上次通過時間間隔 3、5、7、14 天複習。無提示首答正確才前進；提示後答對保留階段，答錯重設，兩者都隔天再確認。熟練後退出日常出題。</p>
         <p className="mt-2 text-xs text-foreground-muted">學習時區為 Asia/Taipei，每日 00:00 換日；進行中的題目維持原計畫。</p>
       </section>
+      <QuestionReportsPanel />
+
       <section aria-labelledby="appearance" className="border-t border-border pt-5">
         <h2 id="appearance" className="text-sm font-medium text-foreground">外觀</h2>
         <p className="mt-1 text-xs leading-5 text-foreground-muted">預設為深色；這個選擇只保存在這台裝置。</p>

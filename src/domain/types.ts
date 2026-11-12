@@ -206,6 +206,8 @@ export interface NewLearningItemInput {
    * so it needs no new-word reservation, and its concept card is shown before its first question.
    */
   introduceWithCard?: boolean;
+  /** Counts as introduced on creation without asking for a card, because a sibling item already shows it. */
+  introduced?: boolean;
   answerFormat?: "vocabulary" | "kanji";
   acceptedAnswers?: string[];
   language: Language;
