@@ -28,7 +28,7 @@ export function WordFormBuilder({ items }: { items: LearningItem[] }) {
     } catch (error) { setError(describePersistenceError(error)); } finally { busy.current = false; setSaving(false); }
   }
   const control = "mt-1 min-h-11 w-full rounded-lg border border-border bg-surface px-3 py-2 text-foreground";
-  return <details className="rounded-2xl border border-border bg-surface p-4"><summary className="min-h-11 cursor-pointer text-sm font-semibold text-foreground">用我的單字練變化</summary>
+  return <details className="border-t border-border pt-5"><summary className="min-h-11 cursor-pointer text-sm font-semibold text-foreground">用我的單字練變化</summary>
     <p className="text-xs leading-6 text-foreground-muted">辭書形單字需有讀音。明確確認詞類，不能只看る結尾猜第一／第二類。內建混合練習與單詞練習分開，單詞成功不代表整條規則熟練。</p>
     <label className="mt-3 block text-sm text-foreground">已保存的單字<select className={control} value={itemId} onChange={e => { setItemId(e.target.value); setConfirmed(false); }}><option value="">請選擇</option>{words.map(word => <option key={word.id} value={word.id}>{word.answer}（{word.reading}）：{word.promptZh}</option>)}</select></label>
     <label className="mt-3 block text-sm text-foreground">詞類<select className={control} value={wordClass} onChange={e => { setWordClass(e.target.value as JapaneseWordClass); setConfirmed(false); }}>{Object.entries(classes).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>

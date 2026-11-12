@@ -18,8 +18,8 @@ export function EnglishProgress() {
   const items = (data?.items ?? []).filter(i => !i.coachReport && !i.archivedAt).map(i => ({ ...i, status: englishStatus(i, data!.schedules, data!.attempts) }));
   const filtered = items.filter(i => (!query || `${i.answer} ${i.promptZh}`.toLowerCase().includes(query)) && (tag === "全部" || i.tags.includes(tag)) && (type === "全部" || (type === "單字" ? i.type === "vocabulary" : i.type !== "vocabulary")) && (status === "全部" || i.status === status)).sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   const reset = () => setLimit(20);
-  return <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-    <header><h1 className="text-xl font-semibold text-foreground">英文進度</h1><p className="mt-1 text-sm text-foreground-muted">{data ? `${items.length} 個單字與片語 · ${items.filter(i => i.status === "mastered").length} 個穩定理解` : "載入進度…"}</p></header>
+  return <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+    <header><h1 className="font-display text-3xl font-medium tracking-tight text-foreground">英文進度</h1><p className="mt-1 text-sm text-foreground-muted">{data ? `${items.length} 個單字與片語 · ${items.filter(i => i.status === "mastered").length} 個穩定理解` : "載入進度…"}</p></header>
     {error ? <p role="alert" className="text-danger">{error}</p> : null}
     <label className="text-sm text-foreground">搜尋單字或詞義<input value={search} onChange={e => {setSearch(e.target.value);reset();}} className="mt-1 min-h-11 w-full rounded-lg border border-border bg-surface px-3 py-2" /></label>
     <div className="grid grid-cols-2 gap-2">

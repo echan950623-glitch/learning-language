@@ -96,11 +96,11 @@ export default function PracticePage() {
       ).total
     : 0;
   return (
-    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-      <Link href="/" className="min-h-11 py-2 text-sm text-primary">
-        ‹ 首頁
+    <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+      <Link href="/review" className="min-h-11 py-2 text-sm text-foreground-muted">
+        ‹ 複習
       </Link>
-      <h1 className="text-2xl font-semibold text-foreground">
+      <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
         {PRACTICE_CATEGORIES.find((c) => c.id === category)?.label}
       </h1>
       <label className="text-sm text-foreground">
@@ -131,7 +131,7 @@ export default function PracticePage() {
       ) : (
         <>
           {topics.length ? (
-            <section className="rounded-2xl border border-border bg-surface p-4">
+            <section className="border-t border-border pt-5">
               <h2 className="font-semibold text-foreground">
                 {category === "conjugation" ? "練哪些形式？" : "練哪些內容？"}
               </h2>
@@ -282,7 +282,7 @@ export default function PracticePage() {
             selection={selection}
             label={`開始練習・${Math.min(total, count)} 題`}
           />
-          <details className="rounded-2xl border border-border bg-surface p-4">
+          <details className="border-t border-border pt-5">
             <summary className="min-h-11 cursor-pointer text-sm font-semibold text-foreground">
               查看內容與進度
             </summary>

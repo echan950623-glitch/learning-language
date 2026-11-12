@@ -54,7 +54,7 @@ export function MigrationPanel() {
   }
 
   return (
-    <section aria-labelledby="migration-panel" className="rounded-2xl border border-border bg-surface p-4">
+    <section aria-labelledby="migration-panel" className="border-t border-border pt-5">
       <h2 id="migration-panel" className="text-sm font-medium text-foreground">
         資料遷移到雲端
       </h2>

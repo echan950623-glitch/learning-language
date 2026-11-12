@@ -591,7 +591,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
   if (phase === "loading") {
     return (
       <main
-        className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6"
+        className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6"
         aria-live="polite"
       >
         <div className="h-6 w-32 animate-pulse rounded bg-surface-muted" />
@@ -602,8 +602,8 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
 
   if (phase === "error") {
     return (
-      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-        <h1 className="text-xl font-semibold text-foreground">{area === "new" ? "新字專區" : area === "review" ? "複習專區" : "今日學習"}</h1>
+      <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">{area === "new" ? "新字專區" : area === "review" ? "複習專區" : "今日學習"}</h1>
         <div
           role="alert"
           className="rounded-xl bg-danger-bg px-4 py-3 text-sm text-danger"
@@ -625,8 +625,8 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     const hasSavedItems =
       getRepository().listItems({ language }).length > 0;
     return (
-      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-        <h1 className="text-xl font-semibold text-foreground">今日學習</h1>
+      <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">今日學習</h1>
         <EmptyState
           title={
             hasSavedItems
@@ -648,7 +648,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           }
         />
         <section
-          className="rounded-2xl border border-border bg-surface p-4"
+          className="border-t border-border pt-5"
           aria-labelledby="quick-quiz-title"
           hidden={language === "en" || !!area}
         >
@@ -713,14 +713,14 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
       .filter((item): item is LearningItem => Boolean(item));
 
     return (
-      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-        <h1 className="text-xl font-semibold text-foreground">
+      <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
           {sessionSnapshot?.mode && sessionSnapshot.mode !== "today"
             ? `${STUDY_MODE_LABELS[sessionSnapshot.mode]}結算`
             : "今日結算"}
         </h1>
 
-        <section className="rounded-2xl border border-border bg-surface p-4">
+        <section className="border-t border-border pt-5">
           <dl className="grid grid-cols-2 gap-3">
             <div>
               <dt className="text-xs text-foreground-muted">完成題數</dt>
@@ -794,7 +794,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           </dl>
         </section>
 
-        <section className="rounded-2xl border border-border bg-surface p-4">
+        <section className="border-t border-border pt-5">
           <h2 className="text-sm font-medium text-foreground-muted">
             需要加強
           </h2>
@@ -849,7 +849,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
   if (!unit || !item || !currentExercise) {
     return (
       <main
-        className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6"
+        className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6"
         aria-live="polite"
       >
         <div className="h-6 w-32 animate-pulse rounded bg-surface-muted" />
@@ -883,57 +883,58 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
       : undefined);
   if (introductionItem)
     return (
-      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-        <h1 className="text-xl font-semibold text-foreground">
-          先理解{introductionItem.practice ? "練習內容" : "新字"}
-        </h1>
-        <p className="text-sm text-foreground-muted">
-          {language === "en" ? "先看指定詞義與例句，再練習辨義。理解卡不計入答對率。" : "先看詞義、讀音和例句，接著做無提示回想。理解卡不計入答對率。"}
-        </p>
-        <section className="flex flex-col gap-4 rounded-2xl border border-border bg-surface p-5">
-          <Badge tone="neutral">理解卡</Badge>
-          <p className="text-3xl font-semibold text-foreground">
+      <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+        <header>
+          <p className="eyebrow">理解卡</p>
+          <h1 className="mt-2 text-sm leading-6 text-foreground-muted">
+            先理解{introductionItem.practice ? "練習內容" : "新字"}：{language === "en" ? "看指定詞義與例句，再練習辨義。" : "看詞義、讀音和例句，接著做無提示回想。"}理解卡不計入答對率。
+          </h1>
+        </header>
+        <section className="flex flex-1 flex-col border-t border-border pt-8">
+          <p lang={language} className="break-words font-display text-5xl font-medium leading-tight text-foreground">
             {introductionItem.answer}
           </p>
-          <p className="text-lg text-foreground">{introductionItem.reading}</p>
-          <p className="text-foreground">
+          {introductionItem.reading && introductionItem.reading !== introductionItem.answer ? <p lang={language} className="mt-3 text-lg tracking-wide text-foreground-muted">{introductionItem.reading}</p> : null}
+          <p className="mt-6 text-xl text-foreground">
             {introductionItem.promptZh}
             {introductionItem.partOfSpeech
-              ? `（${introductionItem.partOfSpeech}）`
-              : ""}
+              ? <span className="ml-2 text-sm text-foreground-muted">{introductionItem.partOfSpeech}</span>
+              : null}
           </p>
           {introductionItem.englishPractice ? (
-            <p lang="en" className="rounded-lg bg-surface-muted p-3 text-foreground">{introductionItem.englishPractice.variants.find(v => v.mode === "context" && v.role === "practice")?.sentence}</p>
+            <p lang="en" className="mt-6 border-l-2 border-foreground pl-4 leading-7 text-foreground">{introductionItem.englishPractice.variants.find(v => v.mode === "context" && v.role === "practice")?.sentence}</p>
           ) : introductionItem.exampleSentence ? (
-            <p className="rounded-lg bg-surface-muted p-3 text-foreground">
+            <p lang={language} className="mt-6 border-l-2 border-foreground pl-4 leading-7 text-foreground">
               {introductionItem.exampleSentence}
             </p>
           ) : !introductionItem.practice ? (
-            <p className="text-sm text-foreground-muted">
-              尚無短例句，可在單字管理中補上。
+            <p className="mt-6 text-sm text-foreground-muted">
+              這個字尚無短例句。
             </p>
           ) : null}
           {introductionItem.explanation ? (
-            <p className="text-sm text-foreground-muted">
+            <p className="mt-4 text-sm leading-6 text-foreground-muted">
               {introductionItem.explanation}
             </p>
           ) : null}
+          <div className="mt-auto flex flex-col gap-3 pt-10">
           <button
             type="button"
             disabled={introductionSaving}
             onClick={event => understandItem(introductionItem.id, event.timeStamp)}
-            className="min-h-12 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground"
+            className="flex min-h-14 items-center justify-between rounded-xl bg-primary px-5 font-semibold text-primary-foreground disabled:opacity-50"
           >
-            已理解，繼續
+            <span>已理解，繼續</span><span aria-hidden="true">→</span>
           </button>
           <button
             type="button"
             disabled={introductionSaving}
             onClick={event => understandItem(introductionItem.id, event.timeStamp, true)}
-            className="min-h-12 rounded-xl border border-border px-4 py-3 text-foreground"
+            className="min-h-12 px-1 text-left text-sm text-foreground-muted underline underline-offset-4"
           >
             這個已經會了（接著驗證回想）
           </button>
+          </div>
           {gradeError ? (
             <p role="alert" className="text-sm text-danger">
               {gradeError}
@@ -945,8 +946,8 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
 
   if (unit.recallNotBefore && Date.parse(unit.recallNotBefore) > clockNow)
     return (
-      <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
-        <h1 className="text-xl font-semibold text-foreground">
+      <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
           理解已保存，稍後再回想
         </h1>
         <p className="text-sm leading-6 text-foreground-muted">
@@ -971,19 +972,19 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
     );
 
   return (
-    <main className="mx-auto flex w-[94%] max-w-xl flex-1 flex-col gap-4 py-6">
+    <main className="mx-auto flex w-[88%] max-w-xl flex-1 flex-col gap-5 pb-8 pt-6">
       <header>
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-foreground">
+          <h1 className="eyebrow">
             {language === "en" ? "英文 · " : ""}{STUDY_MODE_LABELS[sessionSnapshot?.mode ?? "today"]}
           </h1>
           <span className="text-sm tabular-nums text-foreground-muted">
-            {currentIndex + 1} / {total}
+            <span className="font-semibold text-foreground">{currentIndex + 1}</span> / {total}
           </span>
         </div>
-        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
+        <div className="mt-3 h-px w-full bg-border">
           <div
-            className="h-full rounded-full bg-primary transition-[width]"
+            className="h-0.5 -translate-y-px bg-foreground transition-[width]"
             style={{
               width: `${Math.round(((currentIndex + (subPhase === "graded" ? 0.5 : 0)) / total) * 100)}%`,
             }}
@@ -1014,7 +1015,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
             <button
               type="button"
               onClick={handleAbandonClick}
-              className="text-xs text-foreground-muted underline"
+              className="min-h-8 text-xs text-foreground-muted underline underline-offset-4"
             >
               放棄本次學習
             </button>
@@ -1025,12 +1026,9 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
         ) : null}
       </header>
 
-      <section className="relative flex flex-1 flex-col gap-4 overflow-hidden rounded-2xl border border-border bg-surface p-4 pt-5">
-        <div
-          aria-hidden="true"
-          className={`absolute inset-x-0 top-0 h-1.5 ${abilityTheme.accentClass}`}
-        />
+      <section className="flex flex-1 flex-col gap-5">
         <div className="flex items-center gap-2">
+          <span aria-hidden="true" className={`h-2 w-2 rounded-full ${abilityTheme.accentClass}`} />
           <Badge tone={kind === "review" ? "primary" : "neutral"}>
             {KIND_LABEL[kind]}
           </Badge>
@@ -1059,7 +1057,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
             </p>
           ) : null}
           <p
-            className={`mt-3 whitespace-pre-wrap font-semibold text-foreground ${item.practice || item.englishPractice || item.verificationQuestion ? "text-lg leading-8" : "text-3xl"}`}
+            className={`mt-4 whitespace-pre-wrap break-words text-foreground ${item.practice || item.englishPractice || item.verificationQuestion ? "text-lg font-semibold leading-8" : "font-display text-5xl font-medium leading-tight"}`}
           >
             {learnerText(currentExercise.prompt)
               .replace(/ている・/g, "現在進行／狀態（ている）・")
@@ -1118,7 +1116,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
               <div className="flex flex-col gap-1">
                 <label
                   htmlFor="attempt"
-                  className="text-sm font-medium text-foreground"
+                  className="eyebrow"
                 >
                   你的答案
                 </label>
@@ -1137,8 +1135,8 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
                     if (event.key === "Enter" && event.nativeEvent.isComposing)
                       event.preventDefault();
                   }}
-                  className="scroll-mt-4 rounded-lg border border-border bg-surface px-3 py-3 text-lg text-foreground"
-                  placeholder="輸入答案，按 Enter 或下方按鈕送出"
+                  className="scroll-mt-4 rounded-none border-0 border-b-2 border-foreground bg-transparent px-0 py-3 text-2xl text-foreground placeholder:text-base placeholder:text-foreground-muted focus-visible:outline-none focus-visible:border-accent"
+                  placeholder="輸入答案"
                 />
               </div>
             )}
@@ -1156,7 +1154,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
               type="button"
               disabled={isSubmitting}
               onClick={event => handleSubmitAnswer(undefined, true, event.timeStamp)}
-              className="min-h-12 rounded-xl border border-border px-4 py-3 text-sm font-medium text-foreground"
+              className="min-h-12 rounded-xl border border-border px-4 py-3 text-sm text-foreground"
             >
               想不起來
             </button>
@@ -1182,7 +1180,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
               <button
                 type="submit"
                 disabled={isSubmitting || attemptText.trim().length === 0}
-                className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-sm transition-[filter,transform] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 ${abilityTheme.buttonClass}`}
+                className={`min-h-14 rounded-xl px-5 text-sm font-semibold transition-[filter,transform] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-30 ${abilityTheme.buttonClass}`}
               >
                 確認答案
               </button>
@@ -1192,10 +1190,10 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
           <div className="mt-auto flex flex-col gap-3">
             <div
               role={gradedResult.correct ? "status" : "alert"}
-              className={`rounded-lg px-3 py-3 ${gradedResult.correct ? "bg-success-bg" : "bg-danger-bg"}`}
+              className={`border-l-2 py-1 pl-4 ${gradedResult.correct ? "border-success" : "border-danger"}`}
             >
               <p
-                className={`text-lg font-semibold ${gradedResult.correct ? "text-success" : "text-danger"}`}
+                className={`text-xl font-semibold ${gradedResult.correct ? "text-success" : "text-danger"}`}
               >
                 {gradedResult.correct ? "答對了" : "答錯了"}
               </p>
@@ -1238,7 +1236,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
                 unit.ability,
               )?.recentFailures ?? 0) >= 3 ? (
                 <p className="mt-2 text-sm text-foreground-muted">
-                  這個能力最近反覆失敗。先回單字管理重新理解詞義與例句、檢查可接受答案；也可以先休息，稍後再做，不需要一直加題。
+                  這個能力最近反覆失敗。先到進度頁的單字庫重新看詞義與例句；也可以先休息，稍後再做，不需要一直加題。
                 </p>
               ) : null}
             </div>
@@ -1264,7 +1262,7 @@ function StudyScreen({ language, area }: { language: Language; area?: "new" | "r
               type="button"
               autoFocus
               onClick={handleNext}
-              className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-sm transition-[filter,transform] active:translate-y-px ${abilityTheme.buttonClass}`}
+              className={`min-h-14 rounded-xl px-5 text-sm font-semibold transition-[filter,transform] active:translate-y-px ${abilityTheme.buttonClass}`}
             >
               {isLastQuestion ? "查看結果" : "下一題"}
             </button>

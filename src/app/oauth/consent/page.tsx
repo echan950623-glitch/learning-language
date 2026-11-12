@@ -16,8 +16,8 @@ interface OAuthConsentPageProps {
 
 function InfoCard({ title, message }: { title: string; message: string }) {
   return (
-    <main className="mx-auto flex w-[94%] max-w-md flex-1 flex-col items-center justify-center gap-3 py-16 text-center">
-      <h1 className="text-lg font-semibold text-foreground">{title}</h1>
+    <main className="mx-auto flex w-[88%] max-w-md flex-1 flex-col items-center justify-center gap-3 py-16 text-center">
+      <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">{title}</h1>
       <p className="text-sm text-foreground-muted">{message}</p>
     </main>
   );
@@ -65,15 +65,15 @@ export default async function OAuthConsentPage({ searchParams }: OAuthConsentPag
     .filter((scope) => scope.length > 0);
 
   return (
-    <main className="mx-auto flex w-[94%] max-w-md flex-1 flex-col gap-5 py-10">
+    <main className="mx-auto flex w-[88%] max-w-md flex-1 flex-col gap-5 py-10">
       <header>
-        <h1 className="text-xl font-semibold text-foreground">授權存取請求</h1>
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">授權存取請求</h1>
         <p className="mt-1 text-sm text-foreground-muted">
           「{details.client.name}」想要以 {details.user.email} 的身分存取你的學習資料。
         </p>
       </header>
 
-      <section className="rounded-2xl border border-border bg-surface p-4">
+      <section className="border-t border-border pt-5">
         <h2 className="text-sm font-medium text-foreground">這個應用程式將可以</h2>
         {scopes.length > 0 ? (
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-foreground-muted">

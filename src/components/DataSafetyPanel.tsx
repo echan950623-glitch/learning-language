@@ -38,7 +38,7 @@ export function DataSafetyPanel() {
     if (result.phase === "error" || result.phase === "partial_failure") throw new Error(result.message ?? "核對未完成；原始副本及待送操作已保留。");
     refreshCloudData();
   }
-  return <section aria-labelledby="data-safety" className="rounded-2xl border border-border bg-surface p-4 space-y-3 text-sm">
+  return <section aria-labelledby="data-safety" className="border-t border-border pt-5 space-y-3 text-sm">
     <h2 id="data-safety" className="font-medium">資料備份與還原</h2>
     <p className="text-xs text-foreground-muted">備份包含此帳戶的內容、作答、排程、session、偏好與同步恢復紀錄，不包含登入憑證。還原僅限相同帳戶或訪客歸屬。</p>
     <button disabled={busy} className="min-h-12 rounded-xl border border-border px-4" onClick={() => run(download)}>匯出完整備份</button>

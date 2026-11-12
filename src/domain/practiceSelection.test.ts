@@ -3,6 +3,8 @@ import { getJapanesePracticeCatalog } from "./japanesePracticeCatalog";
 import { practiceInput } from "./learningPractice";
 import {
   learnedPracticeItems,
+  practiceCategory,
+  selectMixedReviewUnits,
   selectPracticeUnits,
   type PracticeSelection,
 } from "./practiceSelection";
@@ -170,5 +172,39 @@ describe("home practice selection", () => {
     expect(result.units).toEqual([
       { learningItemId: "word", ability: "reading", kind: "review" },
     ]);
+  });
+});
+
+describe("mixed review across content areas", () => {
+  const catalog = getJapanesePracticeCatalog();
+  const learned = (entry: (typeof catalog)[number], id: string): LearningItem => ({
+    ...practiceInput({ ...entry.practice, learned: true, enabled: true }), id, status: "new", createdAt: now.toISOString(), isSeed: false,
+  });
+  const word = (id: string): LearningItem => ({ id, language: "ja", type: "vocabulary", answer: `単語${id}`, reading: `たんご${id}`, promptZh: `詞義${id}`, source: "manual", tags: [], status: "learning", createdAt: now.toISOString(), isSeed: false, introducedAt: now.toISOString() });
+  const conjugations = catalog.filter(c => c.practice.kind === "conjugation").slice(0, 6).map((c, n) => learned(c, `c${n}`));
+  const other = catalog.find(c => c.practice.kind !== "conjugation")!;
+  const items = [...conjugations, learned(other, "other"), word("w1"), word("w2")];
+
+  it("takes turns between areas so a large area cannot fill the round", () => {
+    const mixed = selectMixedReviewUnits(items, [], [], 4, now, () => 0.5);
+    const areas = mixed.units.map(u => practiceCategory(items.find(i => i.id === u.learningItemId)!));
+    expect(mixed.units).toHaveLength(4);
+    expect(new Set(areas).size).toBe(3);
+    expect(areas.filter(area => area === "conjugation").length).toBeLessThanOrEqual(2);
+  });
+  it("counts everything learned, without duplicates, and leaves unlearned content out", () => {
+    const unlearned = learned(catalog.filter(c => c.practice.kind === "conjugation")[7], "unlearned");
+    unlearned.practice!.learned = false;
+    const mixed = selectMixedReviewUnits([...items, unlearned], [], [], 100, now, () => 0.5);
+    const keys = mixed.units.map(u => `${u.learningItemId}:${u.ability}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(mixed.total).toBe(mixed.units.length);
+    expect(mixed.units.some(u => u.learningItemId === "unlearned")).toBe(false);
+    expect(Object.values(mixed.byCategory).reduce((sum, count) => sum + count, 0)).toBe(mixed.total);
+    expect(mixed.byCategory.conjugation).toBeGreaterThanOrEqual(6);
+  });
+  it("puts unresolved mistakes ahead of other learned content in their area", () => {
+    const mixed = selectMixedReviewUnits(items, [attempt("c5")], [], 3, now, () => 0.5);
+    expect(mixed.units.find(u => u.learningItemId.startsWith("c"))?.learningItemId).toBe("c5");
   });
 });

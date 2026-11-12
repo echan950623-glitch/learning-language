@@ -103,9 +103,9 @@ export function SignInView({ redirectTo, googleAvailable, errorMessage }: SignIn
   }
 
   return (
-    <main className="mx-auto flex w-[94%] max-w-sm flex-1 flex-col justify-center gap-5 py-6">
+    <main className="mx-auto flex w-[88%] max-w-sm flex-1 flex-col justify-center gap-5 py-6">
       <header>
-        <h1 className="text-xl font-semibold text-foreground">登入</h1>
+        <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">登入</h1>
         <p className="mt-1 text-sm text-foreground-muted">
           登入後，這台裝置的學習紀錄可以同步到雲端，也能讓已連結的 GPT 讀取你的學習進度。
         </p>
@@ -148,7 +148,7 @@ export function SignInView({ redirectTo, googleAvailable, errorMessage }: SignIn
       </div>
 
       {status === "sent" ? (
-        <div role="status" className="rounded-2xl border border-border bg-surface p-4 text-sm text-foreground">
+        <div role="status" className="border-t border-border pt-5 text-sm text-foreground">
           登入連結已寄出，請到 <span className="font-medium">{email.trim()}</span> 收信並點擊連結完成登入。
         </div>
       ) : (
